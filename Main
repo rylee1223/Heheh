@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local VirtualUser = game:GetService("VirtualUser")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -11,7 +12,7 @@ if playerGui:FindFirstChild("CaseFarmingGUI") then
 end
 
 -- State
-local selectedCase = 10 -- Default to case 10
+local selectedCase = 10
 local isLooping = false
 local loopConnection = nil
 local dropdownOpen = false
@@ -53,10 +54,10 @@ screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = playerGui
 
--- Main Frame
+-- Main Frame (increased height for Anti-AFK label)
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 280, 0, 300)
-mainFrame.Position = UDim2.new(0.5, -140, 0.5, -150)
+mainFrame.Size = UDim2.new(0, 280, 0, 340)
+mainFrame.Position = UDim2.new(0.5, -140, 0.5, -170)
 mainFrame.BackgroundColor3 = Color3.fromRGB(33, 33, 39)
 mainFrame.BackgroundTransparency = 0.18
 mainFrame.BorderSizePixel = 0
@@ -79,7 +80,6 @@ titleBar.BorderSizePixel = 0
 titleBar.Parent = mainFrame
 Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 12)
 
--- Cover the bottom rounded corners of the title bar
 local titleFix = Instance.new("Frame")
 titleFix.Size = UDim2.new(1, 0, 0, 12)
 titleFix.Position = UDim2.new(0, 0, 1, -12)
@@ -131,7 +131,7 @@ dropdownBtn.Size = UDim2.new(1, -30, 0, 38)
 dropdownBtn.Position = UDim2.new(0, 15, 0, 78)
 dropdownBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
 dropdownBtn.BackgroundTransparency = 0.1
-dropdownBtn.Text = "Case 10  ▼" -- Default shows Case 10
+dropdownBtn.Text = "Case 10  ▼"
 dropdownBtn.TextColor3 = Color3.fromRGB(230, 230, 235)
 dropdownBtn.TextSize = 15
 dropdownBtn.Font = Enum.Font.GothamSemibold
@@ -139,7 +139,7 @@ dropdownBtn.BorderSizePixel = 0
 dropdownBtn.Parent = mainFrame
 Instance.new("UICorner", dropdownBtn).CornerRadius = UDim.new(0, 8)
 
--- Dropdown List (overlays on top)
+-- Dropdown List
 local dropdownList = Instance.new("ScrollingFrame")
 dropdownList.Size = UDim2.new(1, -30, 0, 150)
 dropdownList.Position = UDim2.new(0, 15, 0, 120)
@@ -167,7 +167,19 @@ listPadding.PaddingLeft = UDim.new(0, 4)
 listPadding.PaddingRight = UDim.new(0, 4)
 listPadding.Parent = dropdownList
 
--- Status Label (defined early so options can update it)
+-- Anti-AFK Label
+local antiAFKLabel = Instance.new("TextLabel")
+antiAFKLabel.Size = UDim2.new(1, -30, 0, 16)
+antiAFKLabel.Position = UDim2.new(0, 15, 1, -48)
+antiAFKLabel.BackgroundTransparency = 1
+antiAFKLabel.Text = "Anti-AFK: Enabled"
+antiAFKLabel.TextColor3 = Color3.fromRGB(85, 200, 115)
+antiAFKLabel.TextSize = 12
+antiAFKLabel.Font = Enum.Font.GothamSemibold
+antiAFKLabel.TextXAlignment = Enum.TextXAlignment.Center
+antiAFKLabel.Parent = mainFrame
+
+-- Status Label
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1, -30, 0, 18)
 statusLabel.Position = UDim2.new(0, 15, 1, -25)
@@ -179,7 +191,7 @@ statusLabel.Font = Enum.Font.Gotham
 statusLabel.TextXAlignment = Enum.TextXAlignment.Center
 statusLabel.Parent = mainFrame
 
--- Build dropdown options 1-10
+-- Build dropdown options
 for i = 1, 10 do
     local option = Instance.new("TextButton")
     option.Size = UDim2.new(1, -8, 0, 30)
@@ -239,9 +251,9 @@ end)
 local loopBtn = Instance.new("TextButton")
 loopBtn.Size = UDim2.new(1, -30, 0, 40)
 loopBtn.Position = UDim2.new(0, 15, 0, 222)
-loopBtn.BackgroundColor3 = Color3.fromRGB(65, 85, 105) -- Starts ON color
+loopBtn.BackgroundColor3 = Color3.fromRGB(65, 85, 105)
 loopBtn.BackgroundTransparency = 0.1
-loopBtn.Text = "Loop: ON" -- Starts as ON
+loopBtn.Text = "Loop: ON"
 loopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 loopBtn.TextSize = 15
 loopBtn.Font = Enum.Font.GothamBold
@@ -311,11 +323,21 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- ============================================
--- AUTO START: Case 10 loop begins on execution
--- ============================================
+-- ========================
+-- ANTI-AFK (Prevents idle kick)
+-- ========================
+player.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    task.wait(1)
+    VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+end)
+
+-- ========================
+-- AUTO START: Case 10 loop
+-- ========================
 isLooping = true
-statusLabel.Text = "Looping Case 10..."
+statusLabel.Text = "Looping Case 10... | Anti-AFK Active"
 loopConnection = RunService.Heartbeat:Connect(function()
     local prompt = getPrompt(selectedCase)
     if prompt then
