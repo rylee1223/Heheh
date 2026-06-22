@@ -1,0 +1,328 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Remove old GUI if it exists
+if playerGui:FindFirstChild("CaseFarmingGUI") then
+    playerGui.CaseFarmingGUI:Destroy()
+end
+
+-- State
+local selectedCase = 10 -- Default to case 10
+local isLooping = false
+local loopConnection = nil
+local dropdownOpen = false
+
+-- Get the prompt from a number
+local function getPrompt(num)
+    local cases = workspace["World Building"]:FindFirstChild("Cases")
+    if not cases then return nil end
+    local caseFolder = cases:FindFirstChild("Case_" .. num)
+    if not caseFolder then return nil end
+    local base = caseFolder:FindFirstChild("Base")
+    if not base then return nil end
+    return base:FindFirstChild("ProximityPrompt")
+end
+
+-- Fire once
+local function fireOnce(statusLabel)
+    local prompt = getPrompt(selectedCase)
+    if not prompt then
+        statusLabel.Text = "Case_" .. selectedCase .. " not found!"
+        return
+    end
+    prompt.HoldDuration = 0
+    prompt.Enabled = true
+    if fireproximityprompt then
+        fireproximityprompt(prompt)
+    else
+        prompt:InputHoldBegin()
+        task.wait()
+        prompt:InputHoldEnd()
+    end
+    statusLabel.Text = "Fired Case " .. selectedCase .. "!"
+end
+
+-- ScreenGui
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "CaseFarmingGUI"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = playerGui
+
+-- Main Frame
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 280, 0, 300)
+mainFrame.Position = UDim2.new(0.5, -140, 0.5, -150)
+mainFrame.BackgroundColor3 = Color3.fromRGB(33, 33, 39)
+mainFrame.BackgroundTransparency = 0.18
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Parent = screenGui
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 12)
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(75, 75, 85)
+mainStroke.Thickness = 1
+mainStroke.Transparency = 0.2
+mainStroke.Parent = mainFrame
+
+-- Title Bar
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 42)
+titleBar.BackgroundColor3 = Color3.fromRGB(40, 40, 47)
+titleBar.BackgroundTransparency = 0.08
+titleBar.BorderSizePixel = 0
+titleBar.Parent = mainFrame
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 12)
+
+-- Cover the bottom rounded corners of the title bar
+local titleFix = Instance.new("Frame")
+titleFix.Size = UDim2.new(1, 0, 0, 12)
+titleFix.Position = UDim2.new(0, 0, 1, -12)
+titleFix.BackgroundColor3 = titleBar.BackgroundColor3
+titleFix.BackgroundTransparency = titleBar.BackgroundTransparency
+titleFix.BorderSizePixel = 0
+titleFix.Parent = titleBar
+
+local titleText = Instance.new("TextLabel")
+titleText.Size = UDim2.new(1, -50, 1, 0)
+titleText.Position = UDim2.new(0, 15, 0, 0)
+titleText.BackgroundTransparency = 1
+titleText.Text = "Case Farmer"
+titleText.TextColor3 = Color3.fromRGB(225, 225, 230)
+titleText.TextSize = 16
+titleText.Font = Enum.Font.GothamBold
+titleText.TextXAlignment = Enum.TextXAlignment.Left
+titleText.Parent = titleBar
+
+-- Close Button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 28, 0, 28)
+closeBtn.Position = UDim2.new(1, -35, 0, 7)
+closeBtn.BackgroundColor3 = Color3.fromRGB(170, 55, 55)
+closeBtn.BackgroundTransparency = 0.15
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.TextSize = 14
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.BorderSizePixel = 0
+closeBtn.Parent = titleBar
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
+
+-- Select Label
+local selectLabel = Instance.new("TextLabel")
+selectLabel.Size = UDim2.new(1, -30, 0, 20)
+selectLabel.Position = UDim2.new(0, 15, 0, 55)
+selectLabel.BackgroundTransparency = 1
+selectLabel.Text = "Select Case Number:"
+selectLabel.TextColor3 = Color3.fromRGB(160, 160, 170)
+selectLabel.TextSize = 13
+selectLabel.Font = Enum.Font.Gotham
+selectLabel.TextXAlignment = Enum.TextXAlignment.Left
+selectLabel.Parent = mainFrame
+
+-- Dropdown Button
+local dropdownBtn = Instance.new("TextButton")
+dropdownBtn.Size = UDim2.new(1, -30, 0, 38)
+dropdownBtn.Position = UDim2.new(0, 15, 0, 78)
+dropdownBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+dropdownBtn.BackgroundTransparency = 0.1
+dropdownBtn.Text = "Case 10  ▼" -- Default shows Case 10
+dropdownBtn.TextColor3 = Color3.fromRGB(230, 230, 235)
+dropdownBtn.TextSize = 15
+dropdownBtn.Font = Enum.Font.GothamSemibold
+dropdownBtn.BorderSizePixel = 0
+dropdownBtn.Parent = mainFrame
+Instance.new("UICorner", dropdownBtn).CornerRadius = UDim.new(0, 8)
+
+-- Dropdown List (overlays on top)
+local dropdownList = Instance.new("ScrollingFrame")
+dropdownList.Size = UDim2.new(1, -30, 0, 150)
+dropdownList.Position = UDim2.new(0, 15, 0, 120)
+dropdownList.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+dropdownList.BackgroundTransparency = 0.05
+dropdownList.BorderSizePixel = 0
+dropdownList.Visible = false
+dropdownList.ZIndex = 10
+dropdownList.ScrollBarThickness = 4
+dropdownList.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 110)
+dropdownList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+dropdownList.CanvasSize = UDim2.new(0, 0, 0, 0)
+dropdownList.Parent = mainFrame
+Instance.new("UICorner", dropdownList).CornerRadius = UDim.new(0, 8)
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Padding = UDim.new(0, 2)
+listLayout.Parent = dropdownList
+
+local listPadding = Instance.new("UIPadding")
+listPadding.PaddingTop = UDim.new(0, 4)
+listPadding.PaddingBottom = UDim.new(0, 4)
+listPadding.PaddingLeft = UDim.new(0, 4)
+listPadding.PaddingRight = UDim.new(0, 4)
+listPadding.Parent = dropdownList
+
+-- Status Label (defined early so options can update it)
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -30, 0, 18)
+statusLabel.Position = UDim2.new(0, 15, 1, -25)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "Ready"
+statusLabel.TextColor3 = Color3.fromRGB(140, 140, 150)
+statusLabel.TextSize = 12
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.TextXAlignment = Enum.TextXAlignment.Center
+statusLabel.Parent = mainFrame
+
+-- Build dropdown options 1-10
+for i = 1, 10 do
+    local option = Instance.new("TextButton")
+    option.Size = UDim2.new(1, -8, 0, 30)
+    option.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    option.BackgroundTransparency = 0.1
+    option.Text = "Case " .. i
+    option.TextColor3 = Color3.fromRGB(215, 215, 222)
+    option.TextSize = 14
+    option.Font = Enum.Font.Gotham
+    option.BorderSizePixel = 0
+    option.ZIndex = 11
+    option.Parent = dropdownList
+    Instance.new("UICorner", option).CornerRadius = UDim.new(0, 6)
+
+    option.MouseEnter:Connect(function()
+        option.BackgroundColor3 = Color3.fromRGB(70, 70, 80)
+    end)
+    option.MouseLeave:Connect(function()
+        option.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    end)
+
+    option.MouseButton1Click:Connect(function()
+        selectedCase = i
+        dropdownBtn.Text = "Case " .. i .. "  ▼"
+        dropdownList.Visible = false
+        dropdownOpen = false
+        statusLabel.Text = "Selected Case " .. i
+    end)
+end
+
+-- Toggle dropdown
+dropdownBtn.MouseButton1Click:Connect(function()
+    dropdownOpen = not dropdownOpen
+    dropdownList.Visible = dropdownOpen
+    dropdownBtn.Text = dropdownOpen and ("Case " .. selectedCase .. "  ▲") or ("Case " .. selectedCase .. "  ▼")
+end)
+
+-- Fire Once Button
+local fireBtn = Instance.new("TextButton")
+fireBtn.Size = UDim2.new(1, -30, 0, 40)
+fireBtn.Position = UDim2.new(0, 15, 0, 175)
+fireBtn.BackgroundColor3 = Color3.fromRGB(58, 58, 68)
+fireBtn.BackgroundTransparency = 0.1
+fireBtn.Text = "Fire Once"
+fireBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+fireBtn.TextSize = 15
+fireBtn.Font = Enum.Font.GothamBold
+fireBtn.BorderSizePixel = 0
+fireBtn.Parent = mainFrame
+Instance.new("UICorner", fireBtn).CornerRadius = UDim.new(0, 8)
+
+fireBtn.MouseButton1Click:Connect(function()
+    fireOnce(statusLabel)
+end)
+
+-- Loop Toggle Button
+local loopBtn = Instance.new("TextButton")
+loopBtn.Size = UDim2.new(1, -30, 0, 40)
+loopBtn.Position = UDim2.new(0, 15, 0, 222)
+loopBtn.BackgroundColor3 = Color3.fromRGB(65, 85, 105) -- Starts ON color
+loopBtn.BackgroundTransparency = 0.1
+loopBtn.Text = "Loop: ON" -- Starts as ON
+loopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+loopBtn.TextSize = 15
+loopBtn.Font = Enum.Font.GothamBold
+loopBtn.BorderSizePixel = 0
+loopBtn.Parent = mainFrame
+Instance.new("UICorner", loopBtn).CornerRadius = UDim.new(0, 8)
+
+loopBtn.MouseButton1Click:Connect(function()
+    isLooping = not isLooping
+    if isLooping then
+        loopBtn.Text = "Loop: ON"
+        loopBtn.BackgroundColor3 = Color3.fromRGB(65, 85, 105)
+        statusLabel.Text = "Looping Case " .. selectedCase .. "..."
+        loopConnection = RunService.Heartbeat:Connect(function()
+            local prompt = getPrompt(selectedCase)
+            if prompt then
+                prompt.HoldDuration = 0
+                prompt.Enabled = true
+                if fireproximityprompt then
+                    fireproximityprompt(prompt)
+                end
+            end
+        end)
+    else
+        loopBtn.Text = "Loop: OFF"
+        loopBtn.BackgroundColor3 = Color3.fromRGB(52, 52, 60)
+        statusLabel.Text = "Loop stopped"
+        if loopConnection then
+            loopConnection:Disconnect()
+            loopConnection = nil
+        end
+    end
+end)
+
+-- Close functionality
+closeBtn.MouseButton1Click:Connect(function()
+    if loopConnection then loopConnection:Disconnect() end
+    screenGui:Destroy()
+end)
+
+-- Dragging
+local dragging = false
+local dragStart = nil
+local startPos = nil
+
+titleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = mainFrame.Position
+    end
+end)
+
+titleBar.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+-- ============================================
+-- AUTO START: Case 10 loop begins on execution
+-- ============================================
+isLooping = true
+statusLabel.Text = "Looping Case 10..."
+loopConnection = RunService.Heartbeat:Connect(function()
+    local prompt = getPrompt(selectedCase)
+    if prompt then
+        prompt.HoldDuration = 0
+        prompt.Enabled = true
+        if fireproximityprompt then
+            fireproximityprompt(prompt)
+        end
+    end
+end)
