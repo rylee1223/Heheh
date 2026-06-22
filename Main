@@ -54,10 +54,10 @@ screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = playerGui
 
--- Main Frame (increased height for Anti-AFK label)
+-- Main Frame (increased height for better Anti-AFK display)
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 280, 0, 340)
-mainFrame.Position = UDim2.new(0.5, -140, 0.5, -170)
+mainFrame.Size = UDim2.new(0, 280, 0, 380)
+mainFrame.Position = UDim2.new(0.5, -140, 0.5, -190)
 mainFrame.BackgroundColor3 = Color3.fromRGB(33, 33, 39)
 mainFrame.BackgroundTransparency = 0.18
 mainFrame.BorderSizePixel = 0
@@ -167,24 +167,36 @@ listPadding.PaddingLeft = UDim.new(0, 4)
 listPadding.PaddingRight = UDim.new(0, 4)
 listPadding.Parent = dropdownList
 
--- Anti-AFK Label
+-- Anti-AFK Display (Prominent box)
+local antiAFKFrame = Instance.new("Frame")
+antiAFKFrame.Size = UDim2.new(1, -30, 0, 36)
+antiAFKFrame.Position = UDim2.new(0, 15, 0, 275)
+antiAFKFrame.BackgroundColor3 = Color3.fromRGB(40, 65, 45)
+antiAFKFrame.BorderSizePixel = 0
+antiAFKFrame.Parent = mainFrame
+Instance.new("UICorner", antiAFKFrame).CornerRadius = UDim.new(0, 8)
+
+local antiAFKStroke = Instance.new("UIStroke")
+antiAFKStroke.Color = Color3.fromRGB(85, 200, 115)
+antiAFKStroke.Thickness = 1.5
+antiAFKStroke.Parent = antiAFKFrame
+
 local antiAFKLabel = Instance.new("TextLabel")
-antiAFKLabel.Size = UDim2.new(1, -30, 0, 16)
-antiAFKLabel.Position = UDim2.new(0, 15, 1, -48)
+antiAFKLabel.Size = UDim2.new(1, 0, 1, 0)
 antiAFKLabel.BackgroundTransparency = 1
-antiAFKLabel.Text = "Anti-AFK: Enabled"
+antiAFKLabel.Text = "🟢 ANTI-AFK: ENABLED"
 antiAFKLabel.TextColor3 = Color3.fromRGB(85, 200, 115)
-antiAFKLabel.TextSize = 12
-antiAFKLabel.Font = Enum.Font.GothamSemibold
+antiAFKLabel.TextSize = 14
+antiAFKLabel.Font = Enum.Font.GothamBold
 antiAFKLabel.TextXAlignment = Enum.TextXAlignment.Center
-antiAFKLabel.Parent = mainFrame
+antiAFKLabel.Parent = antiAFKFrame
 
 -- Status Label
 local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, -30, 0, 18)
-statusLabel.Position = UDim2.new(0, 15, 1, -25)
+statusLabel.Size = UDim2.new(1, -30, 0, 20)
+statusLabel.Position = UDim2.new(0, 15, 1, -28)
 statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Ready"
+statusLabel.Text = "Looping Case 10... | Anti-AFK Active"
 statusLabel.TextColor3 = Color3.fromRGB(140, 140, 150)
 statusLabel.TextSize = 12
 statusLabel.Font = Enum.Font.Gotham
@@ -218,7 +230,7 @@ for i = 1, 10 do
         dropdownBtn.Text = "Case " .. i .. "  ▼"
         dropdownList.Visible = false
         dropdownOpen = false
-        statusLabel.Text = "Selected Case " .. i
+        statusLabel.Text = "Selected Case " .. i .. " | Anti-AFK Active"
     end)
 end
 
@@ -266,7 +278,7 @@ loopBtn.MouseButton1Click:Connect(function()
     if isLooping then
         loopBtn.Text = "Loop: ON"
         loopBtn.BackgroundColor3 = Color3.fromRGB(65, 85, 105)
-        statusLabel.Text = "Looping Case " .. selectedCase .. "..."
+        statusLabel.Text = "Looping Case " .. selectedCase .. "... | Anti-AFK Active"
         loopConnection = RunService.Heartbeat:Connect(function()
             local prompt = getPrompt(selectedCase)
             if prompt then
@@ -280,7 +292,7 @@ loopBtn.MouseButton1Click:Connect(function()
     else
         loopBtn.Text = "Loop: OFF"
         loopBtn.BackgroundColor3 = Color3.fromRGB(52, 52, 60)
-        statusLabel.Text = "Loop stopped"
+        statusLabel.Text = "Loop stopped | Anti-AFK Active"
         if loopConnection then
             loopConnection:Disconnect()
             loopConnection = nil
@@ -324,7 +336,7 @@ UserInputService.InputChanged:Connect(function(input)
 end)
 
 -- ========================
--- ANTI-AFK (Prevents idle kick)
+-- ANTI-AFK (Always Active)
 -- ========================
 player.Idled:Connect(function()
     VirtualUser:CaptureController()
