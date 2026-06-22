@@ -10,11 +10,11 @@ local CONFIG = {
     UPDATE_INTERVAL = 1,
 
     -- 4 Player slots — fill in Roblox username + their message ID
-    -- Leave MESSAGE_ID as "" to auto-create a new message for that player
+    -- Leave MESSAGE_ID as "" to disable Discord updates for that player
     PLAYERS = {
-        {USERNAME = "Build3r_MAGIC2012", MESSAGE_ID ="1518758643166875681"},
-        {USERNAME = "odtgPixelTiger", MESSAGE_ID = " 1518758669922336828"},
-        {USERNAME "qak_HazeMoonHD5705",MESSAGE_ID = "1518758690235224208"},
+        {USERNAME = "Build3r_MAGIC2012", MESSAGE_ID = "1518758643166875681"},
+        {USERNAME = "odtgPixelTiger", MESSAGE_ID = "1518758669922336828"},
+        {USERNAME = "qak_HazeMoonHD5705", MESSAGE_ID = "1518758690235224208"},
         {USERNAME = "dimdam457secholder", MESSAGE_ID = "1518758703824633916"},
     },
 
@@ -101,7 +101,7 @@ end
 --// ================================================
 --// MULTI-PLAYER DISCORD BOT SYSTEM
 --// Finds which slot matches this player, then
---// edits that slot's message (or creates one).
+--// edits that slot's message by ID (no new messages created).
 --// ================================================
 
 -- Find which CONFIG.PLAYERS slot belongs to this player
@@ -113,9 +113,8 @@ for _, slot in pairs(CONFIG.PLAYERS) do
     end
 end
 
--- Runtime message ID (may be auto-assigned if blank)
+-- Runtime message ID (must be provided in config to edit)
 local linkedMessageId = (mySlot and mySlot.MESSAGE_ID ~= "") and mySlot.MESSAGE_ID or nil
-local messageVerified = false
 
 local function discordRequest(method, endpoint, body)
     if CONFIG.BOT_TOKEN == "" or CONFIG.CHANNEL_ID == "" then return nil end
@@ -143,40 +142,6 @@ local function discordRequest(method, endpoint, body)
     return result
 end
 
--- Verify the stored message ID belongs to this player
-local function verifyMessage()
-    if not linkedMessageId then return false end
-    if messageVerified then return true end
-
-    local data = discordRequest(
-        "GET",
-        "/channels/" .. CONFIG.CHANNEL_ID .. "/messages/" .. linkedMessageId
-    )
-    if not data then return false end
-
-    -- Check content field and embed fields for player name
-    local nameFound = false
-    if data.content and string.lower(data.content) == string.lower(player.Name) then
-        nameFound = true
-    end
-    if not nameFound and data.embeds and data.embeds[1] and data.embeds[1].fields then
-        for _, f in pairs(data.embeds[1].fields) do
-            if string.lower(f.value or "") == string.lower(player.Name) then
-                nameFound = true
-                break
-            end
-        end
-    end
-
-    if nameFound then
-        messageVerified = true
-        return true
-    else
-        warn("[GiftFarmer] Message " .. linkedMessageId .. " does not match player: " .. player.Name)
-        return false
-    end
-end
-
 -- Build embed for this player
 local function buildEmbed(collected, rate, elapsed, currentTotal)
     local uptimeStr = string.format(
@@ -190,7 +155,6 @@ local function buildEmbed(collected, rate, elapsed, currentTotal)
     end
 
     return {
-        content = player.Name, -- used for ownership check
         embeds = {{
             title  = "🎁  Gift Farmer — Player " .. slotIndex .. " Live",
             color  = 14680064,
@@ -212,10 +176,11 @@ local function buildEmbed(collected, rate, elapsed, currentTotal)
     }
 end
 
--- Send / edit the message for this player
+-- Edit the message for this player (Does NOT create new messages)
 local function updateDiscord(collected, rate, elapsed)
     if CONFIG.BOT_TOKEN == "" or CONFIG.CHANNEL_ID == "" then return end
     if not mySlot then return end -- this player is not in the PLAYERS list
+    if not linkedMessageId then return end -- no message ID provided, do not create one
 
     local now = tick()
     if now - lastUpdateTime < (CONFIG.UPDATE_INTERVAL * 60) then return end
@@ -225,40 +190,12 @@ local function updateDiscord(collected, rate, elapsed)
     local embedData    = buildEmbed(collected, rate, elapsed, currentTotal)
 
     task.spawn(function()
-        if linkedMessageId then
-            if verifyMessage() then
-                -- PATCH = edit existing message
-                discordRequest(
-                    "PATCH",
-                    "/channels/" .. CONFIG.CHANNEL_ID .. "/messages/" .. linkedMessageId,
-                    embedData
-                )
-            else
-                -- Verification failed — post a new message instead
-                local result = discordRequest(
-                    "POST",
-                    "/channels/" .. CONFIG.CHANNEL_ID .. "/messages",
-                    embedData
-                )
-                if result and result.id then
-                    linkedMessageId = result.id
-                    messageVerified = true
-                    print("[GiftFarmer] New message created for " .. player.Name .. " — ID: " .. result.id)
-                end
-            end
-        else
-            -- No message ID — create a fresh one
-            local result = discordRequest(
-                "POST",
-                "/channels/" .. CONFIG.CHANNEL_ID .. "/messages",
-                embedData
-            )
-            if result and result.id then
-                linkedMessageId = result.id
-                messageVerified = true
-                print("[GiftFarmer] Message created for " .. player.Name .. " — ID: " .. result.id)
-            end
-        end
+        -- PATCH = strictly edit existing message by ID
+        discordRequest(
+            "PATCH",
+            "/channels/" .. CONFIG.CHANNEL_ID .. "/messages/" .. linkedMessageId,
+            embedData
+        )
     end)
 end
 
@@ -553,8 +490,10 @@ if CONFIG.BOT_TOKEN ~= "" and CONFIG.CHANNEL_ID ~= "" then
         local hasMsg = (mySlot.MESSAGE_ID ~= "")
         discordLabel.Text = hasMsg
             and ("BOT: editing msg …" .. mySlot.MESSAGE_ID:sub(-6))
-            or  ("BOT: will post new — every " .. CONFIG.UPDATE_INTERVAL .. "min")
-        discordLabel.TextColor3 = Color3.fromRGB(100, 180, 255)
+            or  ("BOT: no msg ID — updates disabled")
+        discordLabel.TextColor3 = hasMsg
+            and Color3.fromRGB(100, 180, 255)
+            or  Color3.fromRGB(255, 160, 60)
     else
         discordLabel.Text = "BOT: " .. player.Name .. " not in PLAYERS list"
         discordLabel.TextColor3 = Color3.fromRGB(255, 160, 60)
