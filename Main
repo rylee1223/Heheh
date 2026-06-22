@@ -1,40 +1,39 @@
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local VirtualUser = game:GetService("VirtualUser")
+-- ============================================================
+--  CASE FARMER GUI  —  Config
+local DEFAULT_CASE = 10   -- Which case to start on (1–10)
+-- ============================================================
 
-local player = Players.LocalPlayer
+local Players         = game:GetService("Players")
+local RunService      = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualUser     = game:GetService("VirtualUser")
+
+local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- Remove old GUI if it exists
+-- Remove old GUI
 if playerGui:FindFirstChild("CaseFarmingGUI") then
     playerGui.CaseFarmingGUI:Destroy()
 end
 
--- State
-local selectedCase = 10
-local isLooping = false
+-- ── State ────────────────────────────────────────────────────
+local selectedCase   = DEFAULT_CASE
+local isLooping      = false
 local loopConnection = nil
-local dropdownOpen = false
+local dropdownOpen   = false
 
--- Get the prompt from a number
+-- ── Helpers ──────────────────────────────────────────────────
 local function getPrompt(num)
     local cases = workspace["World Building"]:FindFirstChild("Cases")
     if not cases then return nil end
-    local caseFolder = cases:FindFirstChild("Case_" .. num)
-    if not caseFolder then return nil end
-    local base = caseFolder:FindFirstChild("Base")
+    local folder = cases:FindFirstChild("Case_" .. num)
+    if not folder then return nil end
+    local base = folder:FindFirstChild("Base")
     if not base then return nil end
     return base:FindFirstChild("ProximityPrompt")
 end
 
--- Fire once
-local function fireOnce(statusLabel)
-    local prompt = getPrompt(selectedCase)
-    if not prompt then
-        statusLabel.Text = "Case_" .. selectedCase .. " not found!"
-        return
-    end
+local function firePrompt(prompt)
     prompt.HoldDuration = 0
     prompt.Enabled = true
     if fireproximityprompt then
@@ -44,319 +43,421 @@ local function fireOnce(statusLabel)
         task.wait()
         prompt:InputHoldEnd()
     end
-    statusLabel.Text = "Fired Case " .. selectedCase .. "!"
 end
 
--- ScreenGui
+-- ── Palette ───────────────────────────────────────────────────
+local C = {
+    bg         = Color3.fromRGB(18, 18, 22),
+    surface    = Color3.fromRGB(26, 26, 32),
+    elevated   = Color3.fromRGB(34, 34, 42),
+    border     = Color3.fromRGB(55, 55, 68),
+    accent     = Color3.fromRGB(99, 130, 255),
+    accentDim  = Color3.fromRGB(60, 85, 180),
+    danger     = Color3.fromRGB(200, 65, 65),
+    success    = Color3.fromRGB(72, 199, 128),
+    textPri    = Color3.fromRGB(230, 230, 238),
+    textSec    = Color3.fromRGB(130, 130, 148),
+    textMuted  = Color3.fromRGB(80, 80, 96),
+}
+
+local function stroke(parent, color, thickness, trans)
+    local s = Instance.new("UIStroke")
+    s.Color       = color or C.border
+    s.Thickness   = thickness or 1
+    s.Transparency = trans or 0
+    s.Parent      = parent
+    return s
+end
+
+local function corner(parent, r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r or 8)
+    c.Parent = parent
+    return c
+end
+
+-- ── Root ─────────────────────────────────────────────────────
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "CaseFarmingGUI"
-screenGui.ResetOnSpawn = false
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.Parent = playerGui
+screenGui.Name            = "CaseFarmingGUI"
+screenGui.ResetOnSpawn    = false
+screenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
+screenGui.Parent          = playerGui
 
--- Main Frame - Smaller size
+-- ── Main Frame ───────────────────────────────────────────────
+local W, H = 260, 310
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 265, 0, 335)
-mainFrame.Position = UDim2.new(0.5, -132.5, 0.5, -167.5)
-mainFrame.BackgroundColor3 = Color3.fromRGB(33, 33, 39)
-mainFrame.BackgroundTransparency = 0.18
-mainFrame.BorderSizePixel = 0
-mainFrame.Active = true
-mainFrame.Parent = screenGui
-Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
+mainFrame.Size              = UDim2.new(0, W, 0, H)
+mainFrame.Position          = UDim2.new(0.5, -W/2, 0.5, -H/2)
+mainFrame.BackgroundColor3  = C.bg
+mainFrame.BorderSizePixel   = 0
+mainFrame.Active            = true
+mainFrame.ClipsDescendants  = true
+mainFrame.Parent            = screenGui
+corner(mainFrame, 12)
+stroke(mainFrame, C.border, 1, 0.3)
 
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Color3.fromRGB(75, 75, 85)
-mainStroke.Thickness = 1
-mainStroke.Transparency = 0.2
-mainStroke.Parent = mainFrame
+-- subtle top gradient strip
+local topGlow = Instance.new("Frame")
+topGlow.Size              = UDim2.new(1, 0, 0, 2)
+topGlow.BackgroundColor3  = C.accent
+topGlow.BackgroundTransparency = 0.3
+topGlow.BorderSizePixel   = 0
+topGlow.ZIndex            = 5
+topGlow.Parent            = mainFrame
 
--- Title Bar
+-- ── Title Bar ────────────────────────────────────────────────
 local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 38)
-titleBar.BackgroundColor3 = Color3.fromRGB(40, 40, 47)
-titleBar.BackgroundTransparency = 0.08
-titleBar.BorderSizePixel = 0
-titleBar.Parent = mainFrame
-Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
+titleBar.Size             = UDim2.new(1, 0, 0, 42)
+titleBar.Position         = UDim2.new(0, 0, 0, 2)
+titleBar.BackgroundColor3 = C.surface
+titleBar.BackgroundTransparency = 0.2
+titleBar.BorderSizePixel  = 0
+titleBar.Parent           = mainFrame
 
-local titleFix = Instance.new("Frame")
-titleFix.Size = UDim2.new(1, 0, 0, 10)
-titleFix.Position = UDim2.new(0, 0, 1, -10)
-titleFix.BackgroundColor3 = titleBar.BackgroundColor3
-titleFix.BackgroundTransparency = titleBar.BackgroundTransparency
-titleFix.BorderSizePixel = 0
-titleFix.Parent = titleBar
+-- Dot icon
+local dot = Instance.new("Frame")
+dot.Size             = UDim2.new(0, 8, 0, 8)
+dot.Position         = UDim2.new(0, 14, 0.5, -4)
+dot.BackgroundColor3 = C.accent
+dot.BorderSizePixel  = 0
+dot.Parent           = titleBar
+corner(dot, 99)
 
 local titleText = Instance.new("TextLabel")
-titleText.Size = UDim2.new(1, -45, 1, 0)
-titleText.Position = UDim2.new(0, 14, 0, 0)
+titleText.Size               = UDim2.new(1, -90, 1, 0)
+titleText.Position           = UDim2.new(0, 28, 0, 0)
 titleText.BackgroundTransparency = 1
-titleText.Text = "Case Farmer"
-titleText.TextColor3 = Color3.fromRGB(225, 225, 230)
-titleText.TextSize = 15
-titleText.Font = Enum.Font.GothamBold
-titleText.TextXAlignment = Enum.TextXAlignment.Left
-titleText.Parent = titleBar
+titleText.Text               = "Case Farmer"
+titleText.TextColor3         = C.textPri
+titleText.TextSize           = 14
+titleText.Font               = Enum.Font.GothamBold
+titleText.TextXAlignment     = Enum.TextXAlignment.Left
+titleText.Parent             = titleBar
 
--- Close Button
+-- Close button
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 26, 0, 26)
-closeBtn.Position = UDim2.new(1, -32, 0, 6)
-closeBtn.BackgroundColor3 = Color3.fromRGB(170, 55, 55)
-closeBtn.BackgroundTransparency = 0.15
-closeBtn.Text = "X"
-closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeBtn.TextSize = 13
-closeBtn.Font = Enum.Font.GothamBold
-closeBtn.BorderSizePixel = 0
-closeBtn.Parent = titleBar
-Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 7)
+closeBtn.Size              = UDim2.new(0, 24, 0, 24)
+closeBtn.Position          = UDim2.new(1, -34, 0.5, -12)
+closeBtn.BackgroundColor3  = C.danger
+closeBtn.BackgroundTransparency = 0.2
+closeBtn.Text              = "✕"
+closeBtn.TextColor3        = Color3.fromRGB(255,255,255)
+closeBtn.TextSize          = 11
+closeBtn.Font              = Enum.Font.GothamBold
+closeBtn.BorderSizePixel   = 0
+closeBtn.Parent            = titleBar
+corner(closeBtn, 6)
 
--- Select Label
+-- ── Content padding helper ────────────────────────────────────
+local PAD   = 14
+local TOP   = 52   -- below title bar
+local GAP   = 10
+
+local function yPos(n)   -- stacked Y positions
+    return UDim2.new(0, PAD, 0, TOP + n)
+end
+
+-- ── Case label ───────────────────────────────────────────────
 local selectLabel = Instance.new("TextLabel")
-selectLabel.Size = UDim2.new(1, -28, 0, 18)
-selectLabel.Position = UDim2.new(0, 14, 0, 50)
+selectLabel.Size             = UDim2.new(1, -PAD*2, 0, 16)
+selectLabel.Position         = yPos(0)
 selectLabel.BackgroundTransparency = 1
-selectLabel.Text = "Select Case Number:"
-selectLabel.TextColor3 = Color3.fromRGB(160, 160, 170)
-selectLabel.TextSize = 12.5
-selectLabel.Font = Enum.Font.Gotham
-selectLabel.TextXAlignment = Enum.TextXAlignment.Left
-selectLabel.Parent = mainFrame
+selectLabel.Text             = "CASE"
+selectLabel.TextColor3       = C.textMuted
+selectLabel.TextSize         = 10
+selectLabel.Font             = Enum.Font.GothamBold
+selectLabel.TextXAlignment   = Enum.TextXAlignment.Left
+selectLabel.Parent           = mainFrame
 
--- Dropdown Button
+-- ── Dropdown button ───────────────────────────────────────────
 local dropdownBtn = Instance.new("TextButton")
-dropdownBtn.Size = UDim2.new(1, -28, 0, 34)
-dropdownBtn.Position = UDim2.new(0, 14, 0, 71)
-dropdownBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
-dropdownBtn.BackgroundTransparency = 0.1
-dropdownBtn.Text = "Case 10  ▼"
-dropdownBtn.TextColor3 = Color3.fromRGB(230, 230, 235)
-dropdownBtn.TextSize = 14
-dropdownBtn.Font = Enum.Font.GothamSemibold
-dropdownBtn.BorderSizePixel = 0
-dropdownBtn.Parent = mainFrame
-Instance.new("UICorner", dropdownBtn).CornerRadius = UDim.new(0, 7)
+dropdownBtn.Size             = UDim2.new(1, -PAD*2, 0, 36)
+dropdownBtn.Position         = yPos(19)
+dropdownBtn.BackgroundColor3 = C.elevated
+dropdownBtn.Text             = ""
+dropdownBtn.BorderSizePixel  = 0
+dropdownBtn.Parent           = mainFrame
+corner(dropdownBtn, 8)
+stroke(dropdownBtn, C.border, 1, 0.4)
 
--- Dropdown List
+local dropdownLabel = Instance.new("TextLabel")
+dropdownLabel.Size               = UDim2.new(1, -36, 1, 0)
+dropdownLabel.Position           = UDim2.new(0, 12, 0, 0)
+dropdownLabel.BackgroundTransparency = 1
+dropdownLabel.Text               = "Case " .. DEFAULT_CASE
+dropdownLabel.TextColor3         = C.textPri
+dropdownLabel.TextSize           = 14
+dropdownLabel.Font               = Enum.Font.GothamSemibold
+dropdownLabel.TextXAlignment     = Enum.TextXAlignment.Left
+dropdownLabel.Parent             = dropdownBtn
+
+local chevron = Instance.new("TextLabel")
+chevron.Size               = UDim2.new(0, 24, 1, 0)
+chevron.Position           = UDim2.new(1, -28, 0, 0)
+chevron.BackgroundTransparency = 1
+chevron.Text               = "▾"
+chevron.TextColor3         = C.textSec
+chevron.TextSize           = 16
+chevron.Font               = Enum.Font.GothamBold
+chevron.TextXAlignment     = Enum.TextXAlignment.Center
+chevron.Parent             = dropdownBtn
+
+-- ── Dropdown list ─────────────────────────────────────────────
 local dropdownList = Instance.new("ScrollingFrame")
-dropdownList.Size = UDim2.new(1, -28, 0, 135)
-dropdownList.Position = UDim2.new(0, 14, 0, 108)
-dropdownList.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
+dropdownList.Size                  = UDim2.new(1, -PAD*2, 0, 130)
+dropdownList.Position              = yPos(58)
+dropdownList.BackgroundColor3      = C.surface
 dropdownList.BackgroundTransparency = 0.05
-dropdownList.BorderSizePixel = 0
-dropdownList.Visible = false
-dropdownList.ZIndex = 10
-dropdownList.ScrollBarThickness = 4
-dropdownList.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 110)
-dropdownList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-dropdownList.CanvasSize = UDim2.new(0, 0, 0, 0)
-dropdownList.Parent = mainFrame
-Instance.new("UICorner", dropdownList).CornerRadius = UDim.new(0, 7)
+dropdownList.BorderSizePixel       = 0
+dropdownList.Visible               = false
+dropdownList.ZIndex                = 20
+dropdownList.ScrollBarThickness    = 3
+dropdownList.ScrollBarImageColor3  = C.border
+dropdownList.AutomaticCanvasSize   = Enum.AutomaticSize.Y
+dropdownList.CanvasSize            = UDim2.new(0,0,0,0)
+dropdownList.Parent                = mainFrame
+corner(dropdownList, 8)
+stroke(dropdownList, C.border, 1, 0.4)
 
 local listLayout = Instance.new("UIListLayout")
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Padding = UDim.new(0, 2)
-listLayout.Parent = dropdownList
+listLayout.SortOrder  = Enum.SortOrder.LayoutOrder
+listLayout.Padding    = UDim.new(0, 3)
+listLayout.Parent     = dropdownList
 
-local listPadding = Instance.new("UIPadding")
-listPadding.PaddingTop = UDim.new(0, 4)
-listPadding.PaddingBottom = UDim.new(0, 4)
-listPadding.PaddingLeft = UDim.new(0, 4)
-listPadding.PaddingRight = UDim.new(0, 4)
-listPadding.Parent = dropdownList
+local listPad = Instance.new("UIPadding")
+listPad.PaddingTop    = UDim.new(0, 5)
+listPad.PaddingBottom = UDim.new(0, 5)
+listPad.PaddingLeft   = UDim.new(0, 5)
+listPad.PaddingRight  = UDim.new(0, 5)
+listPad.Parent        = dropdownList
 
--- Compact Anti-AFK Display
-local antiAFKFrame = Instance.new("Frame")
-antiAFKFrame.Size = UDim2.new(1, -28, 0, 28)
-antiAFKFrame.Position = UDim2.new(0, 14, 0, 225)
-antiAFKFrame.BackgroundColor3 = Color3.fromRGB(40, 65, 45)
-antiAFKFrame.BorderSizePixel = 0
-antiAFKFrame.Parent = mainFrame
-Instance.new("UICorner", antiAFKFrame).CornerRadius = UDim.new(0, 7)
-
-local antiAFKStroke = Instance.new("UIStroke")
-antiAFKStroke.Color = Color3.fromRGB(85, 200, 115)
-antiAFKStroke.Thickness = 1.2
-antiAFKStroke.Parent = antiAFKFrame
-
-local antiAFKLabel = Instance.new("TextLabel")
-antiAFKLabel.Size = UDim2.new(1, 0, 1, 0)
-antiAFKLabel.BackgroundTransparency = 1
-antiAFKLabel.Text = "🟢 ANTI-AFK ENABLED"
-antiAFKLabel.TextColor3 = Color3.fromRGB(85, 200, 115)
-antiAFKLabel.TextSize = 13
-antiAFKLabel.Font = Enum.Font.GothamBold
-antiAFKLabel.TextXAlignment = Enum.TextXAlignment.Center
-antiAFKLabel.Parent = antiAFKFrame
-
--- Status Label
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, -28, 0, 18)
-statusLabel.Position = UDim2.new(0, 14, 1, -26)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Looping Case 10... | Anti-AFK Active"
-statusLabel.TextColor3 = Color3.fromRGB(140, 140, 150)
-statusLabel.TextSize = 11.5
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.TextXAlignment = Enum.TextXAlignment.Center
-statusLabel.Parent = mainFrame
-
--- Build dropdown options
+-- Populate dropdown
 for i = 1, 10 do
-    local option = Instance.new("TextButton")
-    option.Size = UDim2.new(1, -8, 0, 28)
-    option.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
-    option.BackgroundTransparency = 0.1
-    option.Text = "Case " .. i
-    option.TextColor3 = Color3.fromRGB(215, 215, 222)
-    option.TextSize = 13.5
-    option.Font = Enum.Font.Gotham
-    option.BorderSizePixel = 0
-    option.ZIndex = 11
-    option.Parent = dropdownList
-    Instance.new("UICorner", option).CornerRadius = UDim.new(0, 6)
+    local opt = Instance.new("TextButton")
+    opt.Size             = UDim2.new(1, -10, 0, 28)
+    opt.BackgroundColor3 = C.elevated
+    opt.BackgroundTransparency = 0.3
+    opt.Text             = "Case " .. i
+    opt.TextColor3       = C.textPri
+    opt.TextSize         = 13
+    opt.Font             = Enum.Font.Gotham
+    opt.BorderSizePixel  = 0
+    opt.ZIndex           = 21
+    opt.Parent           = dropdownList
+    corner(opt, 6)
 
-    option.MouseEnter:Connect(function()
-        option.BackgroundColor3 = Color3.fromRGB(70, 70, 80)
+    opt.MouseEnter:Connect(function()
+        opt.BackgroundColor3      = C.accent
+        opt.BackgroundTransparency = 0.7
+        opt.TextColor3            = Color3.new(1,1,1)
     end)
-    option.MouseLeave:Connect(function()
-        option.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    opt.MouseLeave:Connect(function()
+        opt.BackgroundColor3      = C.elevated
+        opt.BackgroundTransparency = 0.3
+        opt.TextColor3            = C.textPri
     end)
-
-    option.MouseButton1Click:Connect(function()
+    opt.MouseButton1Click:Connect(function()
         selectedCase = i
-        dropdownBtn.Text = "Case " .. i .. "  ▼"
-        dropdownList.Visible = false
-        dropdownOpen = false
-        statusLabel.Text = "Selected Case " .. i .. " | Anti-AFK Active"
+        dropdownLabel.Text     = "Case " .. i
+        dropdownList.Visible   = false
+        dropdownOpen           = false
+        chevron.Text           = "▾"
     end)
 end
 
--- Toggle dropdown
 dropdownBtn.MouseButton1Click:Connect(function()
-    dropdownOpen = not dropdownOpen
-    dropdownList.Visible = dropdownOpen
-    dropdownBtn.Text = dropdownOpen and ("Case " .. selectedCase .. "  ▲") or ("Case " .. selectedCase .. "  ▼")
+    dropdownOpen           = not dropdownOpen
+    dropdownList.Visible   = dropdownOpen
+    chevron.Text           = dropdownOpen and "▴" or "▾"
 end)
 
--- Fire Once Button
+-- ── Divider ───────────────────────────────────────────────────
+local function makeDivider(yOff)
+    local d = Instance.new("Frame")
+    d.Size             = UDim2.new(1, -PAD*2, 0, 1)
+    d.Position         = UDim2.new(0, PAD, 0, yOff)
+    d.BackgroundColor3 = C.border
+    d.BackgroundTransparency = 0.5
+    d.BorderSizePixel  = 0
+    d.Parent           = mainFrame
+    return d
+end
+
+-- Positions below dropdown (dropdown closed baseline)
+local BTN_Y1 = TOP + 68   -- Fire Once
+local BTN_Y2 = BTN_Y1 + 46  -- Loop toggle
+local DIV_Y  = BTN_Y2 + 46
+local AFK_Y  = DIV_Y + 10
+local STA_Y  = H - 26
+
+-- ── Fire Once button ─────────────────────────────────────────
 local fireBtn = Instance.new("TextButton")
-fireBtn.Size = UDim2.new(1, -28, 0, 36)
-fireBtn.Position = UDim2.new(0, 14, 0, 115)
-fireBtn.BackgroundColor3 = Color3.fromRGB(58, 58, 68)
+fireBtn.Size             = UDim2.new(1, -PAD*2, 0, 36)
+fireBtn.Position         = UDim2.new(0, PAD, 0, BTN_Y1)
+fireBtn.BackgroundColor3 = C.elevated
 fireBtn.BackgroundTransparency = 0.1
-fireBtn.Text = "Fire Once"
-fireBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-fireBtn.TextSize = 14
-fireBtn.Font = Enum.Font.GothamBold
-fireBtn.BorderSizePixel = 0
-fireBtn.Parent = mainFrame
-Instance.new("UICorner", fireBtn).CornerRadius = UDim.new(0, 7)
+fireBtn.Text             = "Fire Once"
+fireBtn.TextColor3       = C.textPri
+fireBtn.TextSize         = 13
+fireBtn.Font             = Enum.Font.GothamSemibold
+fireBtn.BorderSizePixel  = 0
+fireBtn.Parent           = mainFrame
+corner(fireBtn, 8)
+stroke(fireBtn, C.border, 1, 0.5)
 
-fireBtn.MouseButton1Click:Connect(function()
-    fireOnce(statusLabel)
+fireBtn.MouseEnter:Connect(function()
+    fireBtn.BackgroundColor3      = C.elevated
+    fireBtn.BackgroundTransparency = 0
+end)
+fireBtn.MouseLeave:Connect(function()
+    fireBtn.BackgroundColor3      = C.elevated
+    fireBtn.BackgroundTransparency = 0.1
 end)
 
--- Loop Toggle Button
+-- ── Loop toggle button ───────────────────────────────────────
 local loopBtn = Instance.new("TextButton")
-loopBtn.Size = UDim2.new(1, -28, 0, 36)
-loopBtn.Position = UDim2.new(0, 14, 0, 157)
-loopBtn.BackgroundColor3 = Color3.fromRGB(65, 85, 105)
-loopBtn.BackgroundTransparency = 0.1
-loopBtn.Text = "Loop: ON"
-loopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-loopBtn.TextSize = 14
-loopBtn.Font = Enum.Font.GothamBold
-loopBtn.BorderSizePixel = 0
-loopBtn.Parent = mainFrame
-Instance.new("UICorner", loopBtn).CornerRadius = UDim.new(0, 7)
+loopBtn.Size             = UDim2.new(1, -PAD*2, 0, 36)
+loopBtn.Position         = UDim2.new(0, PAD, 0, BTN_Y2)
+loopBtn.BackgroundColor3 = C.accent
+loopBtn.BackgroundTransparency = 0.15
+loopBtn.Text             = "⏸  Stop Loop"
+loopBtn.TextColor3       = Color3.new(1,1,1)
+loopBtn.TextSize         = 13
+loopBtn.Font             = Enum.Font.GothamBold
+loopBtn.BorderSizePixel  = 0
+loopBtn.Parent           = mainFrame
+corner(loopBtn, 8)
+
+local function setLoopUI(on)
+    if on then
+        loopBtn.Text             = "⏸  Stop Loop"
+        loopBtn.BackgroundColor3 = C.accent
+        loopBtn.BackgroundTransparency = 0.15
+    else
+        loopBtn.Text             = "▶  Start Loop"
+        loopBtn.BackgroundColor3 = C.elevated
+        loopBtn.BackgroundTransparency = 0.1
+        stroke(loopBtn, C.border, 1, 0.5)
+    end
+end
+
+makeDivider(DIV_Y)
+
+-- ── Anti-AFK badge ────────────────────────────────────────────
+local afkBadge = Instance.new("Frame")
+afkBadge.Size             = UDim2.new(1, -PAD*2, 0, 26)
+afkBadge.Position         = UDim2.new(0, PAD, 0, AFK_Y)
+afkBadge.BackgroundColor3 = Color3.fromRGB(20, 50, 32)
+afkBadge.BorderSizePixel  = 0
+afkBadge.Parent           = mainFrame
+corner(afkBadge, 6)
+stroke(afkBadge, C.success, 1, 0.5)
+
+local afkLabel = Instance.new("TextLabel")
+afkLabel.Size               = UDim2.new(1, 0, 1, 0)
+afkLabel.BackgroundTransparency = 1
+afkLabel.Text               = "● Anti-AFK Active"
+afkLabel.TextColor3         = C.success
+afkLabel.TextSize           = 12
+afkLabel.Font               = Enum.Font.GothamBold
+afkLabel.TextXAlignment     = Enum.TextXAlignment.Center
+afkLabel.Parent             = afkBadge
+
+-- ── Status bar ────────────────────────────────────────────────
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size               = UDim2.new(1, -PAD*2, 0, 16)
+statusLabel.Position           = UDim2.new(0, PAD, 0, STA_Y)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text               = "Ready"
+statusLabel.TextColor3         = C.textMuted
+statusLabel.TextSize           = 11
+statusLabel.Font               = Enum.Font.Gotham
+statusLabel.TextXAlignment     = Enum.TextXAlignment.Center
+statusLabel.Parent             = mainFrame
+
+local function setStatus(msg)
+    statusLabel.Text = msg
+end
+
+-- ── Button logic ─────────────────────────────────────────────
+fireBtn.MouseButton1Click:Connect(function()
+    local prompt = getPrompt(selectedCase)
+    if not prompt then
+        setStatus("Case " .. selectedCase .. " not found")
+        return
+    end
+    firePrompt(prompt)
+    setStatus("Fired Case " .. selectedCase)
+end)
+
+local function startLoop()
+    isLooping = true
+    setLoopUI(true)
+    setStatus("Looping Case " .. selectedCase .. "…")
+    loopConnection = RunService.Heartbeat:Connect(function()
+        local prompt = getPrompt(selectedCase)
+        if prompt then firePrompt(prompt) end
+    end)
+end
+
+local function stopLoop()
+    isLooping = false
+    setLoopUI(false)
+    setStatus("Loop stopped")
+    if loopConnection then
+        loopConnection:Disconnect()
+        loopConnection = nil
+    end
+end
 
 loopBtn.MouseButton1Click:Connect(function()
-    isLooping = not isLooping
-    if isLooping then
-        loopBtn.Text = "Loop: ON"
-        loopBtn.BackgroundColor3 = Color3.fromRGB(65, 85, 105)
-        statusLabel.Text = "Looping Case " .. selectedCase .. "... | Anti-AFK Active"
-        loopConnection = RunService.Heartbeat:Connect(function()
-            local prompt = getPrompt(selectedCase)
-            if prompt then
-                prompt.HoldDuration = 0
-                prompt.Enabled = true
-                if fireproximityprompt then
-                    fireproximityprompt(prompt)
-                end
-            end
-        end)
-    else
-        loopBtn.Text = "Loop: OFF"
-        loopBtn.BackgroundColor3 = Color3.fromRGB(52, 52, 60)
-        statusLabel.Text = "Loop stopped | Anti-AFK Active"
-        if loopConnection then
-            loopConnection:Disconnect()
-            loopConnection = nil
-        end
-    end
+    if isLooping then stopLoop() else startLoop() end
 end)
 
--- Close functionality
 closeBtn.MouseButton1Click:Connect(function()
-    if loopConnection then loopConnection:Disconnect() end
+    stopLoop()
     screenGui:Destroy()
 end)
 
--- Dragging
-local dragging = false
-local dragStart = nil
-local startPos = nil
+-- ── Dragging ─────────────────────────────────────────────────
+local dragging, dragStart, startPos = false, nil, nil
 
 titleBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging  = true
         dragStart = input.Position
-        startPos = mainFrame.Position
+        startPos  = mainFrame.Position
     end
 end)
 
 titleBar.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
         dragging = false
     end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
+    if dragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement or
+        input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        local d = input.Position - dragStart
         mainFrame.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + delta.X,
-            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            startPos.X.Scale, startPos.X.Offset + d.X,
+            startPos.Y.Scale, startPos.Y.Offset + d.Y
         )
     end
 end)
 
--- ========================
--- ANTI-AFK (Always Active)
--- ========================
+-- ── Anti-AFK ─────────────────────────────────────────────────
 player.Idled:Connect(function()
     VirtualUser:CaptureController()
-    VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
     task.wait(1)
-    VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
 end)
 
--- ========================
--- AUTO START: Case 10 loop
--- ========================
-isLooping = true
-statusLabel.Text = "Looping Case 10... | Anti-AFK Active"
-loopConnection = RunService.Heartbeat:Connect(function()
-    local prompt = getPrompt(selectedCase)
-    if prompt then
-        prompt.HoldDuration = 0
-        prompt.Enabled = true
-        if fireproximityprompt then
-            fireproximityprompt(prompt)
-        end
-    end
-end)
+-- ── Auto-start ───────────────────────────────────────────────
+startLoop()
