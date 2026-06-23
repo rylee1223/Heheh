@@ -23,7 +23,7 @@ end
 local CONFIG = {
     BOT_TOKEN = "GITHUB_PLACEHOLDER",   -- Replace with your real token
     CHANNEL_ID = "1517885492258013184",
-    UPDATE_INTERVAL = 1,                 -- minutes between Discord updates
+    UPDATE_INTERVAL = 5,                 -- minutes between Discord updates
     PLAYERS = {
         {USERNAME = "Build3r_MAGIC2012",      MESSAGE_ID = "1518758643166875681"},
         {USERNAME = "odtgPixelTiger",          MESSAGE_ID = "1518758669922336828"},
