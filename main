@@ -3,13 +3,38 @@
 local DEFAULT_CASE = 10   -- Which case to start on (1–10)
 -- ============================================================
 
+local CONFIG = {
+    -- Bot token and channel (shared)
+    BOT_TOKEN = "GITHUB_PLACEHOLDER", -- DO NOT PUT YOUR REAL TOKEN HERE!
+    CHANNEL_ID = "1517885492258013184",
+
+    -- How often to update Discord messages (in minutes)
+    UPDATE_INTERVAL = 1,
+
+    -- 4 Player slots — fill in EXACT Roblox USERNAME + their message ID
+    PLAYERS = {
+        {USERNAME = "Build3r_MAGIC2012", MESSAGE_ID = "1518758643166875681"},
+        {USERNAME = "odtgPixelTiger", MESSAGE_ID = "1518758669922336828"},
+        {USERNAME = "qak_HazeMoonHD5705", MESSAGE_ID = "1518758690235224208"},
+        {USERNAME = "dimdam457secholder", MESSAGE_ID = "1518758703824633916"},
+    },
+}
+
 local Players         = game:GetService("Players")
 local RunService      = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local VirtualUser     = game:GetService("VirtualUser")
+local HttpService     = game:GetService("HttpService")
 
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+
+-- Anti-AFK
+local vu = VirtualUser
+player.Idled:Connect(function()
+    vu:CaptureController()
+    vu:ClickButton2(Vector2.new())
+end)
 
 -- Remove old GUI
 if playerGui:FindFirstChild("CaseFarmingGUI") then
@@ -19,8 +44,21 @@ end
 -- ── State ────────────────────────────────────────────────────
 local selectedCase   = DEFAULT_CASE
 local isLooping      = false
-local loopConnection = nil
+local loopThread     = nil
 local dropdownOpen   = false
+local startTime      = 0
+local lastUpdateTime = 0
+local casesOpened    = 0
+
+-- ── Discord Slot Finder ──────────────────────────────────────
+local mySlot = nil
+for _, slot in pairs(CONFIG.PLAYERS) do
+    if string.lower(slot.USERNAME) == string.lower(player.Name) then
+        mySlot = slot
+        break
+    end
+end
+local linkedMessageId = (mySlot and mySlot.MESSAGE_ID ~= "") and mySlot.MESSAGE_ID or nil
 
 -- ── Helpers ──────────────────────────────────────────────────
 local function getPrompt(num)
@@ -34,8 +72,10 @@ local function getPrompt(num)
 end
 
 local function firePrompt(prompt)
+    if not prompt then return end
     prompt.HoldDuration = 0
     prompt.Enabled = true
+    casesOpened = casesOpened + 1
     if fireproximityprompt then
         fireproximityprompt(prompt)
     else
@@ -43,6 +83,89 @@ local function firePrompt(prompt)
         task.wait()
         prompt:InputHoldEnd()
     end
+end
+
+-- ── Discord Functions ────────────────────────────────────────
+local function discordRequest(method, endpoint, body)
+    if CONFIG.BOT_TOKEN == "" or CONFIG.BOT_TOKEN == "GITHUB_PLACEHOLDER" or CONFIG.CHANNEL_ID == "" then return nil, "Missing Token" end
+    local req = (syn and syn.request) or (http and http.request) or http_request or request
+    if not req then return nil, "No HTTP" end
+
+    local success, response = pcall(function()
+        return req({
+            Url = "https://discord.com/api/v10" .. endpoint,
+            Method = method,
+            Headers = {
+                ["Authorization"] = "Bot " .. CONFIG.BOT_TOKEN,
+                ["Content-Type"]  = "application/json",
+            },
+            Body = body and HttpService:JSONEncode(body) or nil,
+        })
+    end)
+
+    if not success then return nil, "Crash" end
+    if response and response.StatusCode then
+        if response.StatusCode >= 200 and response.StatusCode < 300 then
+            return true, nil
+        else
+            return nil, "API Error " .. tostring(response.StatusCode)
+        end
+    end
+    return nil, "No response"
+end
+
+local function getInventoryString()
+    local invFolder = player:FindFirstChild("inventory")
+    if not invFolder then return "Empty" end
+    local str = ""
+    for _, item in pairs(invFolder:GetChildren()) do
+        str = str .. item.Name .. ": " .. tostring(item.Value) .. "\n"
+    end
+    if str == "" then return "Empty" end
+    -- Truncate to fit Discord embed limits safely
+    if #str > 1000 then return str:sub(1, 997) .. "..." end
+    return str
+end
+
+local function updateDiscord()
+    if CONFIG.BOT_TOKEN == "GITHUB_PLACEHOLDER" or not mySlot or not linkedMessageId then return end
+    local now = tick()
+    if now - lastUpdateTime < (CONFIG.UPDATE_INTERVAL * 60) then return end
+    lastUpdateTime = now
+
+    local elapsed = now - startTime
+    local uptimeStr = string.format("%02d:%02d", math.floor(elapsed/60), math.floor(elapsed%60))
+    
+    local slotIndex = "?"
+    for i, s in pairs(CONFIG.PLAYERS) do
+        if s == mySlot then slotIndex = tostring(i) break end
+    end
+
+    local embedData = {
+        content = " ",
+        embeds = {{
+            title  = "📦  Case Farmer — Player " .. slotIndex .. " Live",
+            color  = 3447003, -- Blue theme for case farmer
+            fields = {
+                {name = "👤 Player",     value = "```" .. player.Name .. "```", inline = true},
+                {name = "💼 Cases Opened",value = "```" .. tostring(casesOpened) .. "```", inline = true},
+                {name = "🎯 Case Type",  value = "```Case " .. tostring(selectedCase) .. "```", inline = true},
+                {name = "📡 Status",     value = "```" .. (isLooping and "Farming" or "Idle") .. "```", inline = true},
+                {name = "⏱ Uptime",     value = "```" .. uptimeStr .. "```", inline = true},
+                {name = "🎒 Inventory",  value = "```\n" .. getInventoryString() .. "```", inline = false},
+            },
+            footer    = {text = "Slot " .. slotIndex .. " of 4  •  Last updated"},
+            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+            thumbnail = {
+                url = "https://www.roblox.com/headshot-thumbnail/image?userId="
+                    .. player.UserId .. "&width=420&height=420&format=png"
+            },
+        }}
+    }
+
+    task.spawn(function()
+        discordRequest("PATCH", "/channels/" .. CONFIG.CHANNEL_ID .. "/messages/" .. linkedMessageId, embedData)
+    end)
 end
 
 -- ── Palette ───────────────────────────────────────────────────
@@ -84,7 +207,7 @@ screenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
 screenGui.Parent          = playerGui
 
 -- ── Main Frame ───────────────────────────────────────────────
-local W, H = 260, 310
+local W, H = 260, 500
 local mainFrame = Instance.new("Frame")
 mainFrame.Size              = UDim2.new(0, W, 0, H)
 mainFrame.Position          = UDim2.new(0.5, -W/2, 0.5, -H/2)
@@ -96,7 +219,6 @@ mainFrame.Parent            = screenGui
 corner(mainFrame, 12)
 stroke(mainFrame, C.border, 1, 0.3)
 
--- subtle top gradient strip
 local topGlow = Instance.new("Frame")
 topGlow.Size              = UDim2.new(1, 0, 0, 2)
 topGlow.BackgroundColor3  = C.accent
@@ -114,7 +236,6 @@ titleBar.BackgroundTransparency = 0.2
 titleBar.BorderSizePixel  = 0
 titleBar.Parent           = mainFrame
 
--- Dot icon
 local dot = Instance.new("Frame")
 dot.Size             = UDim2.new(0, 8, 0, 8)
 dot.Position         = UDim2.new(0, 14, 0.5, -4)
@@ -134,330 +255,303 @@ titleText.Font               = Enum.Font.GothamBold
 titleText.TextXAlignment     = Enum.TextXAlignment.Left
 titleText.Parent             = titleBar
 
--- Close button
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size              = UDim2.new(0, 24, 0, 24)
-closeBtn.Position          = UDim2.new(1, -34, 0.5, -12)
-closeBtn.BackgroundColor3  = C.danger
-closeBtn.BackgroundTransparency = 0.2
-closeBtn.Text              = "✕"
-closeBtn.TextColor3        = Color3.fromRGB(255,255,255)
-closeBtn.TextSize          = 11
-closeBtn.Font              = Enum.Font.GothamBold
-closeBtn.BorderSizePixel   = 0
-closeBtn.Parent            = titleBar
+closeBtn.Size               = UDim2.new(0, 28, 0, 28)
+closeBtn.Position           = UDim2.new(1, -36, 0.5, -14)
+closeBtn.BackgroundColor3   = C.danger
+closeBtn.BackgroundTransparency = 0.8
+closeBtn.Text               = "✕"
+closeBtn.TextColor3         = C.textSec
+closeBtn.TextSize           = 14
+closeBtn.Font               = Enum.Font.GothamBold
+closeBtn.Parent             = titleBar
 corner(closeBtn, 6)
+closeBtn.MouseButton1Click:Connect(function() mainFrame.Visible = false end)
 
--- ── Content padding helper ────────────────────────────────────
-local PAD   = 14
-local TOP   = 52   -- below title bar
-local GAP   = 10
+-- ── Slot Panel ───────────────────────────────────────────────
+local slotPanel = Instance.new("Frame")
+slotPanel.Size = UDim2.new(0.9, 0, 0, 32)
+slotPanel.Position = UDim2.new(0.05, 0, 0, 48)
+slotPanel.BackgroundColor3 = C.elevated
+slotPanel.Parent = mainFrame
+corner(slotPanel, 6)
 
-local function yPos(n)   -- stacked Y positions
-    return UDim2.new(0, PAD, 0, TOP + n)
+for i, slot in pairs(CONFIG.PLAYERS) do
+    local isMe = string.lower(slot.USERNAME) == string.lower(player.Name)
+    local sl = Instance.new("Frame")
+    sl.Size = UDim2.new(0.25, -4, 1, -6)
+    sl.Position = UDim2.new((i-1)*0.25, 2, 0, 3)
+    sl.BackgroundColor3 = isMe and C.accent or C.surface
+    sl.Parent = slotPanel
+    corner(sl, 4)
+    
+    local sTxt = Instance.new("TextLabel")
+    sTxt.Size = UDim2.new(1, 0, 1, 0)
+    sTxt.BackgroundTransparency = 1
+    sTxt.Text = "P" .. i
+    sTxt.TextColor3 = isMe and Color3.new(1,1,1) or C.textMuted
+    sTxt.Font = Enum.Font.GothamBold
+    sTxt.TextSize = 10
+    sTxt.Parent = sl
 end
 
--- ── Case label ───────────────────────────────────────────────
-local selectLabel = Instance.new("TextLabel")
-selectLabel.Size             = UDim2.new(1, -PAD*2, 0, 16)
-selectLabel.Position         = yPos(0)
-selectLabel.BackgroundTransparency = 1
-selectLabel.Text             = "CASE"
-selectLabel.TextColor3       = C.textMuted
-selectLabel.TextSize         = 10
-selectLabel.Font             = Enum.Font.GothamBold
-selectLabel.TextXAlignment   = Enum.TextXAlignment.Left
-selectLabel.Parent           = mainFrame
+-- ── Content Area ─────────────────────────────────────────────
+local content = Instance.new("Frame")
+content.Size                = UDim2.new(1, -24, 1, -90)
+content.Position            = UDim2.new(0, 12, 0, 86)
+content.BackgroundTransparency = 1
+content.Parent              = mainFrame
 
--- ── Dropdown button ───────────────────────────────────────────
-local dropdownBtn = Instance.new("TextButton")
-dropdownBtn.Size             = UDim2.new(1, -PAD*2, 0, 36)
-dropdownBtn.Position         = yPos(19)
-dropdownBtn.BackgroundColor3 = C.elevated
-dropdownBtn.Text             = ""
-dropdownBtn.BorderSizePixel  = 0
-dropdownBtn.Parent           = mainFrame
-corner(dropdownBtn, 8)
-stroke(dropdownBtn, C.border, 1, 0.4)
+local layout = Instance.new("UIListLayout")
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Padding = UDim.new(0, 8)
+layout.Parent = content
 
-local dropdownLabel = Instance.new("TextLabel")
-dropdownLabel.Size               = UDim2.new(1, -36, 1, 0)
-dropdownLabel.Position           = UDim2.new(0, 12, 0, 0)
-dropdownLabel.BackgroundTransparency = 1
-dropdownLabel.Text               = "Case " .. DEFAULT_CASE
-dropdownLabel.TextColor3         = C.textPri
-dropdownLabel.TextSize           = 14
-dropdownLabel.Font               = Enum.Font.GothamSemibold
-dropdownLabel.TextXAlignment     = Enum.TextXAlignment.Left
-dropdownLabel.Parent             = dropdownBtn
+-- ── Dropdown ─────────────────────────────────────────────────
+local dropBtn = Instance.new("TextButton")
+dropBtn.Size                = UDim2.new(1, 0, 0, 32)
+dropBtn.BackgroundColor3    = C.surface
+dropBtn.Text                = "Select Case: " .. selectedCase
+dropBtn.TextColor3          = C.textPri
+dropBtn.TextSize            = 13
+dropBtn.Font                = Enum.Font.Gotham
+dropBtn.LayoutOrder         = 1
+dropBtn.Parent              = content
+corner(dropBtn, 6)
+stroke(dropBtn, C.border, 1, 0.5)
 
-local chevron = Instance.new("TextLabel")
-chevron.Size               = UDim2.new(0, 24, 1, 0)
-chevron.Position           = UDim2.new(1, -28, 0, 0)
-chevron.BackgroundTransparency = 1
-chevron.Text               = "▾"
-chevron.TextColor3         = C.textSec
-chevron.TextSize           = 16
-chevron.Font               = Enum.Font.GothamBold
-chevron.TextXAlignment     = Enum.TextXAlignment.Center
-chevron.Parent             = dropdownBtn
+local dropList = Instance.new("Frame")
+dropList.Size               = UDim2.new(1, 0, 0, 120)
+dropList.BackgroundColor3   = C.elevated
+dropList.BorderSizePixel    = 0
+dropList.Visible            = false
+dropList.ZIndex             = 10
+dropList.LayoutOrder        = 2
+dropList.Parent             = content
+corner(dropList, 6)
+stroke(dropList, C.border, 1, 0.5)
 
--- ── Dropdown list ─────────────────────────────────────────────
-local dropdownList = Instance.new("ScrollingFrame")
-dropdownList.Size                  = UDim2.new(1, -PAD*2, 0, 130)
-dropdownList.Position              = yPos(58)
-dropdownList.BackgroundColor3      = C.surface
-dropdownList.BackgroundTransparency = 0.05
-dropdownList.BorderSizePixel       = 0
-dropdownList.Visible               = false
-dropdownList.ZIndex                = 20
-dropdownList.ScrollBarThickness    = 3
-dropdownList.ScrollBarImageColor3  = C.border
-dropdownList.AutomaticCanvasSize   = Enum.AutomaticSize.Y
-dropdownList.CanvasSize            = UDim2.new(0,0,0,0)
-dropdownList.Parent                = mainFrame
-corner(dropdownList, 8)
-stroke(dropdownList, C.border, 1, 0.4)
+local dropLayout = Instance.new("UIListLayout")
+dropLayout.SortOrder = Enum.SortOrder.LayoutOrder
+dropLayout.Parent = dropList
 
-local listLayout = Instance.new("UIListLayout")
-listLayout.SortOrder  = Enum.SortOrder.LayoutOrder
-listLayout.Padding    = UDim.new(0, 3)
-listLayout.Parent     = dropdownList
-
-local listPad = Instance.new("UIPadding")
-listPad.PaddingTop    = UDim.new(0, 5)
-listPad.PaddingBottom = UDim.new(0, 5)
-listPad.PaddingLeft   = UDim.new(0, 5)
-listPad.PaddingRight  = UDim.new(0, 5)
-listPad.Parent        = dropdownList
-
--- Populate dropdown
 for i = 1, 10 do
-    local opt = Instance.new("TextButton")
-    opt.Size             = UDim2.new(1, -10, 0, 28)
-    opt.BackgroundColor3 = C.elevated
-    opt.BackgroundTransparency = 0.3
-    opt.Text             = "Case " .. i
-    opt.TextColor3       = C.textPri
-    opt.TextSize         = 13
-    opt.Font             = Enum.Font.Gotham
-    opt.BorderSizePixel  = 0
-    opt.ZIndex           = 21
-    opt.Parent           = dropdownList
-    corner(opt, 6)
-
-    opt.MouseEnter:Connect(function()
-        opt.BackgroundColor3      = C.accent
-        opt.BackgroundTransparency = 0.7
-        opt.TextColor3            = Color3.new(1,1,1)
-    end)
-    opt.MouseLeave:Connect(function()
-        opt.BackgroundColor3      = C.elevated
-        opt.BackgroundTransparency = 0.3
-        opt.TextColor3            = C.textPri
-    end)
-    opt.MouseButton1Click:Connect(function()
+    local btn = Instance.new("TextButton")
+    btn.Size             = UDim2.new(1, 0, 0, 24)
+    btn.BackgroundColor3 = C.surface
+    btn.BackgroundTransparency = 0.5
+    btn.Text             = "Case " .. i
+    btn.TextColor3       = C.textSec
+    btn.TextSize         = 12
+    btn.Font             = Enum.Font.Gotham
+    btn.LayoutOrder      = i
+    btn.Parent           = dropList
+    
+    btn.MouseButton1Click:Connect(function()
         selectedCase = i
-        dropdownLabel.Text     = "Case " .. i
-        dropdownList.Visible   = false
-        dropdownOpen           = false
-        chevron.Text           = "▾"
+        dropBtn.Text = "Select Case: " .. i
+        dropList.Visible = false
+        dropdownOpen = false
     end)
 end
 
-dropdownBtn.MouseButton1Click:Connect(function()
-    dropdownOpen           = not dropdownOpen
-    dropdownList.Visible   = dropdownOpen
-    chevron.Text           = dropdownOpen and "▴" or "▾"
+dropBtn.MouseButton1Click:Connect(function()
+    dropdownOpen = not dropdownOpen
+    dropList.Visible = dropdownOpen
 end)
 
--- ── Divider ───────────────────────────────────────────────────
-local function makeDivider(yOff)
-    local d = Instance.new("Frame")
-    d.Size             = UDim2.new(1, -PAD*2, 0, 1)
-    d.Position         = UDim2.new(0, PAD, 0, yOff)
-    d.BackgroundColor3 = C.border
-    d.BackgroundTransparency = 0.5
-    d.BorderSizePixel  = 0
-    d.Parent           = mainFrame
-    return d
-end
+-- ── Farm Button ──────────────────────────────────────────────
+local farmBtn = Instance.new("TextButton")
+farmBtn.Size                = UDim2.new(1, 0, 0, 36)
+farmBtn.BackgroundColor3    = C.accent
+farmBtn.Text                = "Start Farming"
+farmBtn.TextColor3          = Color3.new(1,1,1)
+farmBtn.TextSize            = 14
+farmBtn.Font                = Enum.Font.GothamBold
+farmBtn.LayoutOrder         = 3
+farmBtn.Parent              = content
+corner(farmBtn, 6)
 
--- Positions below dropdown (dropdown closed baseline)
-local BTN_Y1 = TOP + 68   -- Fire Once
-local BTN_Y2 = BTN_Y1 + 46  -- Loop toggle
-local DIV_Y  = BTN_Y2 + 46
-local AFK_Y  = DIV_Y + 10
-local STA_Y  = H - 26
-
--- ── Fire Once button ─────────────────────────────────────────
-local fireBtn = Instance.new("TextButton")
-fireBtn.Size             = UDim2.new(1, -PAD*2, 0, 36)
-fireBtn.Position         = UDim2.new(0, PAD, 0, BTN_Y1)
-fireBtn.BackgroundColor3 = C.elevated
-fireBtn.BackgroundTransparency = 0.1
-fireBtn.Text             = "Fire Once"
-fireBtn.TextColor3       = C.textPri
-fireBtn.TextSize         = 13
-fireBtn.Font             = Enum.Font.GothamSemibold
-fireBtn.BorderSizePixel  = 0
-fireBtn.Parent           = mainFrame
-corner(fireBtn, 8)
-stroke(fireBtn, C.border, 1, 0.5)
-
-fireBtn.MouseEnter:Connect(function()
-    fireBtn.BackgroundColor3      = C.elevated
-    fireBtn.BackgroundTransparency = 0
-end)
-fireBtn.MouseLeave:Connect(function()
-    fireBtn.BackgroundColor3      = C.elevated
-    fireBtn.BackgroundTransparency = 0.1
-end)
-
--- ── Loop toggle button ───────────────────────────────────────
-local loopBtn = Instance.new("TextButton")
-loopBtn.Size             = UDim2.new(1, -PAD*2, 0, 36)
-loopBtn.Position         = UDim2.new(0, PAD, 0, BTN_Y2)
-loopBtn.BackgroundColor3 = C.accent
-loopBtn.BackgroundTransparency = 0.15
-loopBtn.Text             = "⏸  Stop Loop"
-loopBtn.TextColor3       = Color3.new(1,1,1)
-loopBtn.TextSize         = 13
-loopBtn.Font             = Enum.Font.GothamBold
-loopBtn.BorderSizePixel  = 0
-loopBtn.Parent           = mainFrame
-corner(loopBtn, 8)
-
-local function setLoopUI(on)
-    if on then
-        loopBtn.Text             = "⏸  Stop Loop"
-        loopBtn.BackgroundColor3 = C.accent
-        loopBtn.BackgroundTransparency = 0.15
+farmBtn.MouseButton1Click:Connect(function()
+    isLooping = not isLooping
+    if isLooping then
+        farmBtn.Text = "Stop Farming"
+        farmBtn.BackgroundColor3 = C.danger
+        startTime = tick()
+        casesOpened = 0
+        lastUpdateTime = 0
+        
+        loopThread = task.spawn(function()
+            while isLooping do
+                local prompt = getPrompt(selectedCase)
+                firePrompt(prompt)
+                task.wait(0.5)
+            end
+        end)
     else
-        loopBtn.Text             = "▶  Start Loop"
-        loopBtn.BackgroundColor3 = C.elevated
-        loopBtn.BackgroundTransparency = 0.1
-        stroke(loopBtn, C.border, 1, 0.5)
+        farmBtn.Text = "Start Farming"
+        farmBtn.BackgroundColor3 = C.accent
+        if loopThread then task.cancel(loopThread) end
     end
-end
-
-makeDivider(DIV_Y)
-
--- ── Anti-AFK badge ────────────────────────────────────────────
-local afkBadge = Instance.new("Frame")
-afkBadge.Size             = UDim2.new(1, -PAD*2, 0, 26)
-afkBadge.Position         = UDim2.new(0, PAD, 0, AFK_Y)
-afkBadge.BackgroundColor3 = Color3.fromRGB(20, 50, 32)
-afkBadge.BorderSizePixel  = 0
-afkBadge.Parent           = mainFrame
-corner(afkBadge, 6)
-stroke(afkBadge, C.success, 1, 0.5)
-
-local afkLabel = Instance.new("TextLabel")
-afkLabel.Size               = UDim2.new(1, 0, 1, 0)
-afkLabel.BackgroundTransparency = 1
-afkLabel.Text               = "● Anti-AFK Active"
-afkLabel.TextColor3         = C.success
-afkLabel.TextSize           = 12
-afkLabel.Font               = Enum.Font.GothamBold
-afkLabel.TextXAlignment     = Enum.TextXAlignment.Center
-afkLabel.Parent             = afkBadge
-
--- ── Status bar ────────────────────────────────────────────────
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size               = UDim2.new(1, -PAD*2, 0, 16)
-statusLabel.Position           = UDim2.new(0, PAD, 0, STA_Y)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text               = "Ready"
-statusLabel.TextColor3         = C.textMuted
-statusLabel.TextSize           = 11
-statusLabel.Font               = Enum.Font.Gotham
-statusLabel.TextXAlignment     = Enum.TextXAlignment.Center
-statusLabel.Parent             = mainFrame
-
-local function setStatus(msg)
-    statusLabel.Text = msg
-end
-
--- ── Button logic ─────────────────────────────────────────────
-fireBtn.MouseButton1Click:Connect(function()
-    local prompt = getPrompt(selectedCase)
-    if not prompt then
-        setStatus("Case " .. selectedCase .. " not found")
-        return
-    end
-    firePrompt(prompt)
-    setStatus("Fired Case " .. selectedCase)
 end)
 
-local function startLoop()
-    isLooping = true
-    setLoopUI(true)
-    setStatus("Looping Case " .. selectedCase .. "…")
-    loopConnection = RunService.Heartbeat:Connect(function()
-        local prompt = getPrompt(selectedCase)
-        if prompt then firePrompt(prompt) end
-    end)
-end
+-- ── Inventory Section ────────────────────────────────────────
+local sep = Instance.new("Frame")
+sep.Size                    = UDim2.new(1, 0, 0, 1)
+sep.BackgroundColor3        = C.border
+sep.BackgroundTransparency  = 0.5
+sep.LayoutOrder             = 4
+sep.Parent                  = content
 
-local function stopLoop()
-    isLooping = false
-    setLoopUI(false)
-    setStatus("Loop stopped")
-    if loopConnection then
-        loopConnection:Disconnect()
-        loopConnection = nil
+local invTitle = Instance.new("TextLabel")
+invTitle.Size                = UDim2.new(1, 0, 0, 20)
+invTitle.BackgroundTransparency = 1
+invTitle.Text                = "INVENTORY"
+invTitle.TextColor3          = C.textMuted
+invTitle.TextSize            = 11
+invTitle.Font                = Enum.Font.GothamBold
+invTitle.TextXAlignment      = Enum.TextXAlignment.Left
+invTitle.LayoutOrder         = 5
+invTitle.Parent              = content
+
+local invScroll = Instance.new("ScrollingFrame")
+invScroll.Size               = UDim2.new(1, 0, 1, -195)
+invScroll.BackgroundColor3   = C.surface
+invScroll.BackgroundTransparency = 0.5
+invScroll.BorderSizePixel    = 0
+invScroll.ScrollBarThickness = 3
+invScroll.ScrollBarImageColor3 = C.accentDim
+invScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+invScroll.CanvasSize         = UDim2.new(0, 0, 0, 0)
+invScroll.LayoutOrder        = 6
+invScroll.Parent             = content
+corner(invScroll, 6)
+stroke(invScroll, C.border, 1, 0.6)
+
+local invLayout = Instance.new("UIListLayout")
+invLayout.SortOrder = Enum.SortOrder.LayoutOrder
+invLayout.Padding = UDim.new(0, 2)
+invLayout.Parent = invScroll
+
+local invPadding = Instance.new("UIPadding")
+invPadding.PaddingTop = UDim.new(0, 4)
+invPadding.PaddingBottom = UDim.new(0, 4)
+invPadding.PaddingLeft = UDim.new(0, 6)
+invPadding.PaddingRight = UDim.new(0, 6)
+invPadding.Parent = invScroll
+
+-- Dynamic Inventory GUI Updater
+local function refreshInventory()
+    for _, child in ipairs(invScroll:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+
+    local invFolder = player:FindFirstChild("inventory")
+    if not invFolder then 
+        local noInv = Instance.new("TextLabel")
+        noInv.Size = UDim2.new(1, 0, 0, 20)
+        noInv.BackgroundTransparency = 1
+        noInv.Text = "No inventory found"
+        noInv.TextColor3 = C.textMuted
+        noInv.TextSize = 12
+        noInv.Font = Enum.Font.Gotham
+        noInv.LayoutOrder = 1
+        noInv.Parent = invScroll
+        return 
+    end
+
+    local items = invFolder:GetChildren()
+    if #items == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1, 0, 0, 20)
+        empty.BackgroundTransparency = 1
+        empty.Text = "Inventory is empty"
+        empty.TextColor3 = C.textMuted
+        empty.TextSize = 12
+        empty.Font = Enum.Font.Gotham
+        empty.LayoutOrder = 1
+        empty.Parent = invScroll
+    else
+        for i, item in ipairs(items) do
+            local row = Instance.new("Frame")
+            row.Size = UDim2.new(1, 0, 0, 22)
+            row.BackgroundColor3 = C.elevated
+            row.BackgroundTransparency = 0.4
+            row.LayoutOrder = i
+            row.Parent = invScroll
+            corner(row, 4)
+
+            local nameLabel = Instance.new("TextLabel")
+            nameLabel.Size = UDim2.new(0.65, 0, 1, 0)
+            nameLabel.BackgroundTransparency = 1
+            nameLabel.Text = item.Name
+            nameLabel.TextColor3 = C.textPri
+            nameLabel.TextSize = 12
+            nameLabel.Font = Enum.Font.Gotham
+            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+            nameLabel.Parent = row
+
+            local amountLabel = Instance.new("TextLabel")
+            amountLabel.Size = UDim2.new(0.35, 0, 1, 0)
+            amountLabel.Position = UDim2.new(0.65, 0, 0, 0)
+            amountLabel.BackgroundTransparency = 1
+            amountLabel.Text = tostring(item.Value)
+            amountLabel.TextColor3 = C.accent
+            amountLabel.TextSize = 12
+            amountLabel.Font = Enum.Font.GothamBold
+            amountLabel.TextXAlignment = Enum.TextXAlignment.Right
+            amountLabel.Parent = row
+            
+            item.Changed:Connect(function()
+                if amountLabel and amountLabel.Parent then
+                    amountLabel.Text = tostring(item.Value)
+                end
+            end)
+        end
     end
 end
 
-loopBtn.MouseButton1Click:Connect(function()
-    if isLooping then stopLoop() else startLoop() end
-end)
+-- Hook up inventory events
+local invFolder = player:WaitForChild("inventory", 10)
+if invFolder then
+    invFolder.ChildAdded:Connect(function() task.defer(refreshInventory) end)
+    invFolder.ChildRemoved:Connect(function() task.defer(refreshInventory) end)
+end
+task.defer(refreshInventory)
 
-closeBtn.MouseButton1Click:Connect(function()
-    stopLoop()
-    screenGui:Destroy()
+-- ── Main Loop for Discord Updates ────────────────────────────
+RunService.Heartbeat:Connect(function()
+    if isLooping then
+        updateDiscord()
+    end
 end)
 
 -- ── Dragging ─────────────────────────────────────────────────
-local dragging, dragStart, startPos = false, nil, nil
+local dragging, dragInput, dragStart, startPos
 
 titleBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-    or input.UserInputType == Enum.UserInputType.Touch then
-        dragging  = true
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
         dragStart = input.Position
-        startPos  = mainFrame.Position
+        startPos = mainFrame.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
     end
 end)
 
-titleBar.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-    or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
+titleBar.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
     end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-    if dragging and (
-        input.UserInputType == Enum.UserInputType.MouseMovement or
-        input.UserInputType == Enum.UserInputType.Touch
-    ) then
-        local d = input.Position - dragStart
-        mainFrame.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + d.X,
-            startPos.Y.Scale, startPos.Y.Offset + d.Y
-        )
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
     end
 end)
-
--- ── Anti-AFK ─────────────────────────────────────────────────
-player.Idled:Connect(function()
-    VirtualUser:CaptureController()
-    VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-    task.wait(1)
-    VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-end)
-
--- ── Auto-start ───────────────────────────────────────────────
-startLoop()
