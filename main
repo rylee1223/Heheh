@@ -4,14 +4,9 @@ local DEFAULT_CASE = 10   -- Which case to start on (1–10)
 -- ============================================================
 
 local CONFIG = {
-    -- Bot token and channel (shared)
     BOT_TOKEN = "GITHUB_PLACEHOLDER", -- Loader replaces this securely
     CHANNEL_ID = "1517885492258013184",
-
-    -- How often to update Discord messages (in minutes)
-    UPDATE_INTERVAL = 5,
-
-    -- 4 Player slots — fill in EXACT Roblox USERNAME + their message ID
+    UPDATE_INTERVAL = 5, -- Discord updates every 5 minutes
     PLAYERS = {
         {USERNAME = "Build3r_MAGIC2012", MESSAGE_ID = "1518758643166875681"},
         {USERNAME = "odtgPixelTiger", MESSAGE_ID = "1518758669922336828"},
@@ -35,10 +30,7 @@ player.Idled:Connect(function()
     VirtualUser:ClickButton2(Vector2.new())
 end)
 
--- Remove old GUI
-if playerGui:FindFirstChild("CaseFarmingGUI") then
-    playerGui.CaseFarmingGUI:Destroy()
-end
+if playerGui:FindFirstChild("CaseFarmingGUI") then playerGui.CaseFarmingGUI:Destroy() end
 
 -- ── State ────────────────────────────────────────────────────
 local selectedCase   = DEFAULT_CASE
@@ -52,64 +44,44 @@ local casesOpened    = 0
 -- ── Discord Slot Finder ──────────────────────────────────────
 local mySlot = nil
 for _, slot in pairs(CONFIG.PLAYERS) do
-    if string.lower(slot.USERNAME) == string.lower(player.Name) then
-        mySlot = slot
-        break
-    end
+    if string.lower(slot.USERNAME) == string.lower(player.Name) then mySlot = slot; break end
 end
 local linkedMessageId = (mySlot and mySlot.MESSAGE_ID ~= "") and mySlot.MESSAGE_ID or nil
 
 -- ── Number Formatters ────────────────────────────────────────
 local function formatSuffix(num)
-    if not num then return "0" end
     num = tonumber(num) or 0
-    if num >= 1e12 then
-        return string.format("%.2fT", num / 1e12)
-    elseif num >= 1e9 then
-        return string.format("%.2fB", num / 1e9)
-    elseif num >= 1e6 then
-        return string.format("%.2fM", num / 1e6)
-    elseif num >= 1e3 then
-        return string.format("%.2fK", num / 1e3)
-    else
-        return tostring(math.floor(num))
-    end
+    if num >= 1e12 then return string.format("%.2fT", num / 1e12)
+    elseif num >= 1e9 then return string.format("%.2fB", num / 1e9)
+    elseif num >= 1e6 then return string.format("%.2fM", num / 1e6)
+    elseif num >= 1e3 then return string.format("%.2fK", num / 1e3)
+    else return tostring(math.floor(num)) end
 end
 
 local function formatCommas(num)
-    if not num then return "0" end
     num = tonumber(num) or 0
     local s = tostring(math.floor(num))
-    local k
-    while true do
-        s, k = string.gsub(s, "^(-?%d+)(%d%d%d)", '%1,%2')
-        if k == 0 then break end
-    end
+    while true do s, _ = string.gsub(s, "^(-?%d+)(%d%d%d)", '%1,%2'); if _ == 0 then break end end
     return s
 end
 
 -- ── Helpers ──────────────────────────────────────────────────
 local function getPrompt(num)
-    local cases = workspace["World Building"]:FindFirstChild("Cases")
+    local cases = workspace:FindFirstChild("World Building")
     if not cases then return nil end
     local folder = cases:FindFirstChild("Case_" .. num)
     if not folder then return nil end
     local base = folder:FindFirstChild("Base")
-    if not base then return nil end
-    return base:FindFirstChild("ProximityPrompt")
+    return base and base:FindFirstChild("ProximityPrompt")
 end
 
 local function firePrompt(prompt)
     if not prompt then return end
     prompt.HoldDuration = 0
     prompt.Enabled = true
-    casesOpened = casesOpened + 1
-    if fireproximityprompt then
-        fireproximityprompt(prompt)
-    else
-        prompt:InputHoldBegin()
-        prompt:InputHoldEnd()
-    end
+    casesOpened += 1
+    if fireproximityprompt then fireproximityprompt(prompt)
+    else prompt:InputHoldBegin(); prompt:InputHoldEnd() end
 end
 
 -- ── Discord Functions ────────────────────────────────────────
@@ -122,47 +94,30 @@ local function discordRequest(method, endpoint, body)
         return req({
             Url = "https://discord.com/api/v10" .. endpoint,
             Method = method,
-            Headers = {
-                ["Authorization"] = "Bot " .. CONFIG.BOT_TOKEN,
-                ["Content-Type"]  = "application/json",
-            },
+            Headers = {["Authorization"] = "Bot " .. CONFIG.BOT_TOKEN, ["Content-Type"] = "application/json"},
             Body = body and HttpService:JSONEncode(body) or nil,
         })
     end)
-
     if not success then return nil, "Crash" end
-    if response and response.StatusCode then
-        if response.StatusCode >= 200 and response.StatusCode < 300 then
-            return true, nil
-        else
-            return nil, "API Error " .. tostring(response.StatusCode)
-        end
-    end
-    return nil, "No response"
+    if response and response.StatusCode >= 200 and response.StatusCode < 300 then return true, nil end
+    return nil, "API Error " .. tostring(response.StatusCode)
 end
 
 local function getInventoryString()
-    local invFolder = player:FindFirstChild("inventory")
-    if not invFolder then return "No Inventory Found" end
+    local inv = player:FindFirstChild("inventory")
+    if not inv then return "No Inventory Found" end
     local str = ""
-    for _, item in pairs(invFolder:GetChildren()) do
-        if item:IsA("ValueBase") then
-            str = str .. item.Name .. ": " .. formatSuffix(item.Value) .. "\n"
-        end
+    for _, item in pairs(inv:GetChildren()) do
+        if item:IsA("ValueBase") then str = str .. item.Name .. ": " .. formatSuffix(item.Value) .. "\n" end
     end
-    if str == "" then return "Empty" end
-    if #str > 1000 then return str:sub(1, 997) .. "..." end
-    return str
+    return (str == "") and "Empty" or (#str > 1000 and str:sub(1, 997) .. "..." or str)
 end
 
-local function getTimeStat()
+local function getStoredStat()
     local stats = player:FindFirstChild("playerstats")
     if not stats then return 0 end
-    local timeVal = stats:FindFirstChild("Time")
-    if timeVal then
-        return tonumber(timeVal.Value) or 0
-    end
-    return 0
+    local stored = stats:FindFirstChild("Stored")
+    return stored and tonumber(stored.Value) or 0
 end
 
 local function updateDiscord()
@@ -173,521 +128,250 @@ local function updateDiscord()
 
     local elapsed = now - startTime
     local uptimeStr = string.format("%02d:%02d", math.floor(elapsed/60), math.floor(elapsed%60))
-    
     local slotIndex = "?"
-    for i, s in pairs(CONFIG.PLAYERS) do
-        if s == mySlot then slotIndex = tostring(i) break end
-    end
+    for i, s in pairs(CONFIG.PLAYERS) do if s == mySlot then slotIndex = tostring(i); break end end
 
-    local timeStatRaw = getTimeStat()
-    local timeDisplayDiscord = formatCommas(timeStatRaw) .. " (" .. formatSuffix(timeStatRaw) .. ")"
-
-    local embedData = {
-        content = " ",
-        embeds = {{
-            title  = "📦  Case Farmer — Player " .. slotIndex .. " Live",
-            color  = 3447003,
-            fields = {
-                {name = "👤 Player",     value = "```" .. player.Name .. "```", inline = true},
-                {name = "💼 Cases Opened",value = "```" .. tostring(casesOpened) .. "```", inline = true},
-                {name = "🎯 Case Type",  value = "```Case " .. tostring(selectedCase) .. "```", inline = true},
-                {name = "📡 Status",     value = "```" .. (isLooping and "Farming" or "Idle") .. "```", inline = true},
-                {name = "⏱ Uptime",     value = "```" .. uptimeStr .. "```", inline = true},
-                {name = "⏳ Time Stat",  value = "```" .. timeDisplayDiscord .. "```", inline = true},
-                {name = "🎒 Inventory",  value = "```\n" .. getInventoryString() .. "```", inline = false},
-            },
-            footer    = {text = "Slot " .. slotIndex .. " of 4  •  Updates every " .. CONFIG.UPDATE_INTERVAL .. " min"},
-            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-            thumbnail = {
-                url = "https://www.roblox.com/headshot-thumbnail/image?userId="
-                    .. player.UserId .. "&width=420&height=420&format=png"
-            },
-        }}
-    }
+    local storedRaw = getStoredStat()
+    local storedDisplay = formatCommas(storedRaw) .. " (" .. formatSuffix(storedRaw) .. ")"
 
     task.spawn(function()
-        discordRequest("PATCH", "/channels/" .. CONFIG.CHANNEL_ID .. "/messages/" .. linkedMessageId, embedData)
+        discordRequest("PATCH", "/channels/" .. CONFIG.CHANNEL_ID .. "/messages/" .. linkedMessageId, {
+            content = " ",
+            embeds = {{
+                title = "📦 Case Farmer — Player " .. slotIndex .. " Live",
+                color = 3447003,
+                fields = {
+                    {name = "👤 Player", value = "```" .. player.Name .. "```", inline = true},
+                    {name = "💼 Cases Opened", value = "```" .. tostring(casesOpened) .. "```", inline = true},
+                    {name = "🎯 Case Type", value = "```Case " .. tostring(selectedCase) .. "```", inline = true},
+                    {name = "📡 Status", value = "```" .. (isLooping and "Farming" or "Idle") .. "```", inline = true},
+                    {name = "⏱ Uptime", value = "```" .. uptimeStr .. "```", inline = true},
+                    {name = "💾 Stored", value = "```" .. storedDisplay .. "```", inline = true},
+                    {name = "🎒 Inventory", value = "```\n" .. getInventoryString() .. "```", inline = false},
+                },
+                footer = {text = "Slot " .. slotIndex .. " of 4 • Updates every " .. CONFIG.UPDATE_INTERVAL .. " min"},
+                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                thumbnail = {url = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. player.UserId .. "&width=420&height=420&format=png"}
+            }}
+        })
     end)
 end
 
--- ── Palette ───────────────────────────────────────────────────
+-- ── Palette & UI Helpers ─────────────────────────────────────
 local C = {
-    bg         = Color3.fromRGB(18, 18, 22),
-    surface    = Color3.fromRGB(26, 26, 32),
-    elevated   = Color3.fromRGB(34, 34, 42),
-    border     = Color3.fromRGB(55, 55, 68),
-    accent     = Color3.fromRGB(99, 130, 255),
-    accentDim  = Color3.fromRGB(60, 85, 180),
-    danger     = Color3.fromRGB(200, 65, 65),
-    success    = Color3.fromRGB(72, 199, 128),
-    textPri    = Color3.fromRGB(230, 230, 238),
-    textSec    = Color3.fromRGB(130, 130, 148),
-    textMuted  = Color3.fromRGB(80, 80, 96),
+    bg = Color3.fromRGB(14, 14, 18), surface = Color3.fromRGB(22, 22, 28), elevated = Color3.fromRGB(30, 30, 38),
+    border = Color3.fromRGB(45, 45, 55), accent = Color3.fromRGB(85, 120, 245), accentDim = Color3.fromRGB(50, 75, 160),
+    danger = Color3.fromRGB(190, 55, 55), success = Color3.fromRGB(60, 180, 115),
+    textPri = Color3.fromRGB(235, 235, 245), textSec = Color3.fromRGB(125, 125, 140), textMuted = Color3.fromRGB(70, 70, 85)
 }
 
-local function stroke(parent, color, thickness, trans)
-    local s = Instance.new("UIStroke")
-    s.Color       = color or C.border
-    s.Thickness   = thickness or 1
-    s.Transparency = trans or 0
-    s.Parent      = parent
-    return s
-end
+local function stroke(p, c, t, tr) local s = Instance.new("UIStroke"); s.Color, s.Thickness, s.Transparency, s.Parent = c or C.border, t or 1, tr or 0, p; return s end
+local function corner(p, r) local c = Instance.new("UICorner"); c.CornerRadius, c.Parent = UDim.new(0, r or 6), p; return c end
 
-local function corner(parent, r)
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, r or 8)
-    c.Parent = parent
-    return c
-end
+-- ── Root & Main Frame ────────────────────────────────────────
+local gui = Instance.new("ScreenGui")
+gui.Name, gui.ResetOnSpawn, gui.ZIndexBehavior = "CaseFarmingGUI", false, Enum.ZIndexBehavior.Sibling
+gui.Parent = playerGui
 
--- ── Root ─────────────────────────────────────────────────────
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name            = "CaseFarmingGUI"
-screenGui.ResetOnSpawn    = false
-screenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
-screenGui.Parent          = playerGui
-
--- ── Main Frame ───────────────────────────────────────────────
-local W, H = 260, 500 
-local mainFrame = Instance.new("Frame")
-mainFrame.Size              = UDim2.new(0, W, 0, H)
-mainFrame.Position          = UDim2.new(0.5, -W/2, 0.5, -H/2)
-mainFrame.BackgroundColor3  = C.bg
-mainFrame.BorderSizePixel   = 0
-mainFrame.Active            = true
-mainFrame.ClipsDescendants  = true
-mainFrame.Parent            = screenGui
-corner(mainFrame, 12)
-stroke(mainFrame, C.border, 1, 0.3)
+local W, H = 250, 460
+local main = Instance.new("Frame")
+main.Size, main.Position, main.BackgroundColor3, main.BorderSizePixel, main.Active, main.ClipsDescendants = UDim2.new(0, W, 0, H), UDim2.new(0.5, -W/2, 0.5, -H/2), C.bg, 0, true, true
+main.Parent = gui
+corner(main, 12)
+stroke(main, C.border, 1, 0.4)
 
 local topGlow = Instance.new("Frame")
-topGlow.Size              = UDim2.new(1, 0, 0, 2)
-topGlow.BackgroundColor3  = C.accent
-topGlow.BackgroundTransparency = 0.3
-topGlow.BorderSizePixel   = 0
-topGlow.ZIndex            = 5
-topGlow.Parent            = mainFrame
+topGlow.Size, topGlow.BackgroundColor3, topGlow.BackgroundTransparency, topGlow.BorderSizePixel, topGlow.ZIndex = UDim2.new(1, 0, 0, 2), C.accent, 0.2, 0, 5
+topGlow.Parent = main
 
--- ── Title Bar ────────────────────────────────────────────────
-local titleBar = Instance.new("Frame")
-titleBar.Size             = UDim2.new(1, 0, 0, 42)
-titleBar.Position         = UDim2.new(0, 0, 0, 2)
-titleBar.BackgroundColor3 = C.surface
-titleBar.BackgroundTransparency = 0.2
-titleBar.BorderSizePixel  = 0
-titleBar.Parent           = mainFrame
+-- ── Header ───────────────────────────────────────────────────
+local header = Instance.new("Frame")
+header.Size, header.Position, header.BackgroundColor3, header.BackgroundTransparency, header.BorderSizePixel = UDim2.new(1, 0, 0, 36), UDim2.new(0, 0, 0, 2), C.surface, 0.2, 0
+header.Parent = main
 
 local dot = Instance.new("Frame")
-dot.Size             = UDim2.new(0, 8, 0, 8)
-dot.Position         = UDim2.new(0, 14, 0.5, -4)
-dot.BackgroundColor3 = C.accent
-dot.BorderSizePixel  = 0
-dot.Parent           = titleBar
-corner(dot, 99)
+dot.Size, dot.Position, dot.BackgroundColor3, dot.BorderSizePixel = UDim2.new(0, 7, 0, 7), UDim2.new(0, 12, 0.5, -3.5), C.accent, 0
+dot.Parent = header; corner(dot, 99)
 
-local titleText = Instance.new("TextLabel")
-titleText.Size               = UDim2.new(1, -90, 1, 0)
-titleText.Position           = UDim2.new(0, 28, 0, 0)
-titleText.BackgroundTransparency = 1
-titleText.Text               = "Case Farmer"
-titleText.TextColor3         = C.textPri
-titleText.TextSize           = 14
-titleText.Font               = Enum.Font.GothamBold
-titleText.TextXAlignment     = Enum.TextXAlignment.Left
-titleText.Parent             = titleBar
+local title = Instance.new("TextLabel")
+title.Size, title.Position, title.BackgroundTransparency = UDim2.new(1, -70, 1, 0), UDim2.new(0, 24, 0, 0), 1
+title.Text, title.TextColor3, title.TextSize, title.Font, title.TextXAlignment = "CASE FARMER", C.textPri, 12, Enum.Font.GothamBold, Enum.TextXAlignment.Left
+title.Parent = header
 
 local closeBtn = Instance.new("TextButton")
-closeBtn.Size               = UDim2.new(0, 28, 0, 28)
-closeBtn.Position           = UDim2.new(1, -36, 0.5, -14)
-closeBtn.BackgroundColor3   = C.danger
-closeBtn.BackgroundTransparency = 0.8
-closeBtn.Text               = "✕"
-closeBtn.TextColor3         = C.textSec
-closeBtn.TextSize           = 14
-closeBtn.Font               = Enum.Font.GothamBold
-closeBtn.Parent             = titleBar
-corner(closeBtn, 6)
-closeBtn.MouseButton1Click:Connect(function() mainFrame.Visible = false end)
+closeBtn.Size, closeBtn.Position, closeBtn.BackgroundColor3, closeBtn.BackgroundTransparency = UDim2.new(0, 24, 0, 24), UDim2.new(1, -30, 0.5, -12), C.danger, 0.7
+closeBtn.Text, closeBtn.TextColor3, closeBtn.TextSize, closeBtn.Font = "✕", C.textSec, 11, Enum.Font.GothamBold
+closeBtn.Parent = header; corner(closeBtn, 5)
+closeBtn.MouseButton1Click:Connect(function() main.Visible = false end)
 
--- ── Slot Panel ───────────────────────────────────────────────
+-- ── Content Area ─────────────────────────────────────────────
+local content = Instance.new("Frame")
+content.Size, content.Position, content.BackgroundTransparency = UDim2.new(1, -16, 1, -44), UDim2.new(0, 8, 0, 40), 1
+content.Parent = main
+
+local layout = Instance.new("UIListLayout")
+layout.SortOrder, layout.Padding = Enum.SortOrder.LayoutOrder, UDim.new(0, 6)
+layout.Parent = content
+
+-- ── Player Slots ─────────────────────────────────────────────
 local slotPanel = Instance.new("Frame")
-slotPanel.Size = UDim2.new(0.9, 0, 0, 32)
-slotPanel.Position = UDim2.new(0.05, 0, 0, 48)
-slotPanel.BackgroundColor3 = C.elevated
-slotPanel.Parent = mainFrame
-corner(slotPanel, 6)
+slotPanel.Size, slotPanel.BackgroundColor3, slotPanel.LayoutOrder = UDim2.new(1, 0, 0, 26), C.elevated, 1
+slotPanel.Parent = content; corner(slotPanel, 5)
 
 for i, slot in pairs(CONFIG.PLAYERS) do
     local isMe = string.lower(slot.USERNAME) == string.lower(player.Name)
     local sl = Instance.new("Frame")
-    sl.Size = UDim2.new(0.25, -4, 1, -6)
-    sl.Position = UDim2.new((i-1)*0.25, 2, 0, 3)
-    sl.BackgroundColor3 = isMe and C.accent or C.surface
-    sl.Parent = slotPanel
-    corner(sl, 4)
+    sl.Size, sl.Position, sl.BackgroundColor3 = UDim2.new(0.25, -4, 1, -4), UDim2.new((i-1)*0.25, 2, 0, 2), isMe and C.accent or C.surface
+    sl.Parent = slotPanel; corner(sl, 4)
     
-    local sTxt = Instance.new("TextLabel")
-    sTxt.Size = UDim2.new(1, 0, 1, 0)
-    sTxt.BackgroundTransparency = 1
-    sTxt.Text = "P" .. i
-    sTxt.TextColor3 = isMe and Color3.new(1,1,1) or C.textMuted
-    sTxt.Font = Enum.Font.GothamBold
-    sTxt.TextSize = 10
-    sTxt.Parent = sl
+    local txt = Instance.new("TextLabel")
+    txt.Size, txt.BackgroundTransparency, txt.Text = UDim2.new(1, 0, 1, 0), 1, "P" .. i
+    txt.TextColor3, txt.Font, txt.TextSize = isMe and Color3.new(1,1,1) or C.textMuted, Enum.Font.GothamBold, 9
+    txt.Parent = sl
 end
-
--- ── Content Area ─────────────────────────────────────────────
-local content = Instance.new("Frame")
-content.Size                = UDim2.new(1, -24, 1, -90)
-content.Position            = UDim2.new(0, 12, 0, 86)
-content.BackgroundTransparency = 1
-content.Parent              = mainFrame
-
-local layout = Instance.new("UIListLayout")
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Padding = UDim.new(0, 8)
-layout.Parent = content
 
 -- ── Dropdown ─────────────────────────────────────────────────
 local dropBtn = Instance.new("TextButton")
-dropBtn.Size                = UDim2.new(1, 0, 0, 32)
-dropBtn.BackgroundColor3    = C.surface
-dropBtn.Text                = "Select Case: " .. selectedCase
-dropBtn.TextColor3          = C.textPri
-dropBtn.TextSize            = 13
-dropBtn.Font                = Enum.Font.Gotham
-dropBtn.LayoutOrder         = 1
-dropBtn.Parent              = content
-corner(dropBtn, 6)
-stroke(dropBtn, C.border, 1, 0.5)
+dropBtn.Size, dropBtn.BackgroundColor3, dropBtn.Text, dropBtn.TextColor3, dropBtn.TextSize, dropBtn.Font, dropBtn.LayoutOrder = UDim2.new(1, 0, 0, 26), C.surface, "Select Case: " .. selectedCase, C.textPri, 11, Enum.Font.Gotham, 2
+dropBtn.Parent = content; corner(dropBtn, 5); stroke(dropBtn, C.border, 1, 0.5)
 
 local dropList = Instance.new("Frame")
-dropList.Size               = UDim2.new(1, 0, 0, 120)
-dropList.BackgroundColor3   = C.elevated
-dropList.BorderSizePixel    = 0
-dropList.Visible            = false
-dropList.ZIndex             = 10
-dropList.LayoutOrder        = 2
-dropList.Parent             = content
-corner(dropList, 6)
-stroke(dropList, C.border, 1, 0.5)
+dropList.Size, dropList.BackgroundColor3, dropList.BorderSizePixel, dropList.Visible, dropList.ZIndex, dropList.LayoutOrder = UDim2.new(1, 0, 0, 85), C.elevated, 0, false, 10, 3
+dropList.Parent = content; corner(dropList, 5); stroke(dropList, C.border, 1, 0.5)
 
 local dropLayout = Instance.new("UIListLayout")
-dropLayout.SortOrder = Enum.SortOrder.LayoutOrder
-dropLayout.Parent = dropList
+dropLayout.SortOrder, dropLayout.Parent = Enum.SortOrder.LayoutOrder, dropList
 
 for i = 1, 10 do
     local btn = Instance.new("TextButton")
-    btn.Size             = UDim2.new(1, 0, 0, 24)
-    btn.BackgroundColor3 = C.surface
-    btn.BackgroundTransparency = 0.5
-    btn.Text             = "Case " .. i
-    btn.TextColor3       = C.textSec
-    btn.TextSize         = 12
-    btn.Font             = Enum.Font.Gotham
-    btn.LayoutOrder      = i
-    btn.Parent           = dropList
-    
+    btn.Size, btn.BackgroundColor3, btn.BackgroundTransparency, btn.Text, btn.TextColor3, btn.TextSize, btn.Font, btn.LayoutOrder = UDim2.new(1, 0, 0, 19), C.surface, 0.5, "Case " .. i, C.textSec, 10, Enum.Font.Gotham, i
+    btn.Parent = dropList
     btn.MouseButton1Click:Connect(function()
-        selectedCase = i
-        dropBtn.Text = "Select Case: " .. i
-        dropList.Visible = false
-        dropdownOpen = false
+        selectedCase = i; dropBtn.Text = "Select Case: " .. i; dropList.Visible = false; dropdownOpen = false
     end)
 end
+dropBtn.MouseButton1Click:Connect(function() dropdownOpen = not dropdownOpen; dropList.Visible = dropdownOpen end)
 
-dropBtn.MouseButton1Click:Connect(function()
-    dropdownOpen = not dropdownOpen
-    dropList.Visible = dropdownOpen
-end)
+-- ── Farm Button ──────────────────────────────────────────────
+local farmFrame = Instance.new("Frame")
+farmFrame.Size, farmFrame.BackgroundColor3, farmFrame.LayoutOrder = UDim2.new(1, 0, 0, 30), C.accent, 4
+farmFrame.Parent = content; corner(farmFrame, 5)
 
--- ── Farm Button Logic (Optimized for 60/s) ──────────────────
-local farmBtn = Instance.new("Frame")
-farmBtn.Size                = UDim2.new(1, 0, 0, 36)
-farmBtn.BackgroundColor3    = C.accent
-farmBtn.LayoutOrder         = 3
-farmBtn.Parent              = content
-corner(farmBtn, 6)
-
-local farmBtnInner = Instance.new("TextButton")
-farmBtnInner.Size           = UDim2.new(1, 0, 1, 0)
-farmBtnInner.BackgroundTransparency = 1
-farmBtnInner.Text           = "Start Farming"
-farmBtnInner.TextColor3     = Color3.new(1,1,1)
-farmBtnInner.TextSize       = 14
-farmBtnInner.Font           = Enum.Font.GothamBold
-farmBtnInner.Parent         = farmBtn
+local farmBtn = Instance.new("TextButton")
+farmBtn.Size, farmBtn.BackgroundTransparency, farmBtn.Text, farmBtn.TextColor3, farmBtn.TextSize, farmBtn.Font = UDim2.new(1, 0, 1, 0), 1, "▶ START FARMING", Color3.new(1,1,1), 12, Enum.Font.GothamBold
+farmBtn.Parent = farmFrame
 
 local function startFarming()
     if isLooping then return end
-    isLooping = true
-    farmBtnInner.Text = "Stop Farming"
-    farmBtn.BackgroundColor3 = C.danger
-    startTime = tick()
-    casesOpened = 0
-    lastUpdateTime = 0
-    
-    farmConnection = RunService.Heartbeat:Connect(function()
-        local prompt = getPrompt(selectedCase)
-        firePrompt(prompt)
-    end)
+    isLooping = true; farmBtn.Text, farmFrame.BackgroundColor3 = "■ STOP FARMING", C.danger
+    startTime, casesOpened, lastUpdateTime = tick(), 0, 0
+    farmConnection = RunService.Heartbeat:Connect(function() firePrompt(getPrompt(selectedCase)) end)
 end
 
 local function stopFarming()
     if not isLooping then return end
-    isLooping = false
-    farmBtnInner.Text = "Start Farming"
-    farmBtn.BackgroundColor3 = C.accent
-    if farmConnection then
-        farmConnection:Disconnect()
-        farmConnection = nil
-    end
+    isLooping = false; farmBtn.Text, farmFrame.BackgroundColor3 = "▶ START FARMING", C.accent
+    if farmConnection then farmConnection:Disconnect(); farmConnection = nil end
 end
 
-farmBtnInner.MouseButton1Click:Connect(function()
-    if isLooping then
-        stopFarming()
-    else
-        startFarming()
-    end
-end)
+farmBtn.MouseButton1Click:Connect(function() if isLooping then stopFarming() else startFarming() end end)
 
--- ── Time Stat Display ────────────────────────────────────────
-local timeRow = Instance.new("Frame")
-timeRow.Size                = UDim2.new(1, 0, 0, 32)
-timeRow.BackgroundColor3    = C.surface
-timeRow.LayoutOrder         = 4
-timeRow.Parent              = content
-corner(timeRow, 6)
-stroke(timeRow, C.border, 1, 0.5)
+-- ── Stored Stat Display ──────────────────────────────────────
+local statRow = Instance.new("Frame")
+statRow.Size, statRow.BackgroundColor3, statRow.LayoutOrder = UDim2.new(1, 0, 0, 26), C.surface, 5
+statRow.Parent = content; corner(statRow, 5); stroke(statRow, C.border, 1, 0.5)
 
-local timeIcon = Instance.new("TextLabel")
-timeIcon.Size               = UDim2.new(0, 30, 1, 0)
-timeIcon.BackgroundTransparency = 1
-timeIcon.Text               = "⏳"
-timeIcon.TextSize           = 16
-timeIcon.Font               = Enum.Font.Gotham
-timeIcon.Parent             = timeRow
+local statIcon = Instance.new("TextLabel")
+statIcon.Size, statIcon.BackgroundTransparency, statIcon.Text, statIcon.TextSize, statIcon.Font = UDim2.new(0, 24, 1, 0), 1, "💾", 13, Enum.Font.Gotham
+statIcon.Parent = statRow
 
-local timeLabel = Instance.new("TextLabel")
-timeLabel.Size              = UDim2.new(0.4, -30, 1, 0)
-timeLabel.Position          = UDim2.new(0, 30, 0, 0)
-timeLabel.BackgroundTransparency = 1
-timeLabel.Text              = "Time"
-timeLabel.TextColor3        = C.textSec
-timeLabel.TextSize          = 13
-timeLabel.Font              = Enum.Font.GothamBold
-timeLabel.TextXAlignment    = Enum.TextXAlignment.Left
-timeLabel.Parent            = timeRow
+local statLabel = Instance.new("TextLabel")
+statLabel.Size, statLabel.Position, statLabel.BackgroundTransparency = UDim2.new(0.35, -24, 1, 0), UDim2.new(0, 24, 0, 0), 1
+statLabel.Text, statLabel.TextColor3, statLabel.TextSize, statLabel.Font, statLabel.TextXAlignment = "STORED", C.textSec, 11, Enum.Font.GothamBold, Enum.TextXAlignment.Left
+statLabel.Parent = statRow
 
-local timeValueLabel = Instance.new("TextLabel")
-timeValueLabel.Size         = UDim2.new(0.6, 0, 1, 0)
-timeValueLabel.Position     = UDim2.new(0.4, 0, 0, 0)
-timeValueLabel.BackgroundTransparency = 1
-timeValueLabel.Text         = "Loading..."
-timeValueLabel.TextColor3   = C.accent
-timeValueLabel.TextSize     = 13
-timeValueLabel.Font         = Enum.Font.GothamBold
-timeValueLabel.TextXAlignment = Enum.TextXAlignment.Right
-timeValueLabel.Parent       = timeRow
+local statValue = Instance.new("TextLabel")
+statValue.Size, statValue.Position, statValue.BackgroundTransparency = UDim2.new(0.65, 0, 1, 0), UDim2.new(0.35, 0, 0, 0), 1
+statValue.Text, statValue.TextColor3, statValue.TextSize, statValue.Font, statValue.TextXAlignment = "Loading...", C.accent, 12, Enum.Font.Code, Enum.TextXAlignment.Right
+statValue.Parent = statRow
 
--- Bulletproof Time Stat Live Updater (Uses a 1-second loop instead of listeners)
+-- Live Stored Updater
 task.spawn(function()
-    local statsFolder = player:WaitForChild("playerstats", 30)
-    if not statsFolder then
-        timeValueLabel.Text = "N/A"
-        warn("[Case Farmer] Could not find 'playerstats' folder!")
-        return
-    end
-    
-    -- Debug: Print what is actually inside the playerstats folder
-    warn("[Case Farmer] Scanning playerstats folder...")
-    for _, child in pairs(statsFolder:GetChildren()) do
-        warn("[Case Farmer] Found object: '" .. child.Name .. "' (Type: " .. child.ClassName .. ")")
-    end
-    
-    local timeStat = statsFolder:WaitForChild("Time", 30)
-    if not timeStat then
-        timeValueLabel.Text = "N/A"
-        warn("[Case Farmer] Could not find 'Time' object inside playerstats!")
-        return
-    end
-    
-    warn("[Case Farmer] Successfully found Time object! Current Value: " .. tostring(timeStat.Value))
-    
-    -- Loop constantly to force update the value
-    while task.wait(1) do
-        if timeStat and timeStat.Parent then
-            local val = tonumber(timeStat.Value) or 0
-            timeValueLabel.Text = formatSuffix(val)
-        else
-            timeValueLabel.Text = "Lost"
-            break
-        end
+    local stats = player:WaitForChild("playerstats", 15)
+    if not stats then statValue.Text = "N/A"; return end
+    local stored = stats:WaitForChild("Stored", 15)
+    if not stored then statValue.Text = "N/A"; return end
+    while task.wait(0.5) do
+        if stored.Parent then statValue.Text = formatSuffix(tonumber(stored.Value) or 0) else break end
     end
 end)
 
 -- ── Inventory Section ────────────────────────────────────────
 local sep = Instance.new("Frame")
-sep.Size                    = UDim2.new(1, 0, 0, 1)
-sep.BackgroundColor3        = C.border
-sep.BackgroundTransparency  = 0.5
-sep.LayoutOrder             = 5
-sep.Parent                  = content
+sep.Size, sep.BackgroundColor3, sep.BackgroundTransparency, sep.LayoutOrder = UDim2.new(1, 0, 0, 1), C.border, 0.5, 6
+sep.Parent = content
 
 local invTitle = Instance.new("TextLabel")
-invTitle.Size                = UDim2.new(1, 0, 0, 20)
-invTitle.BackgroundTransparency = 1
-invTitle.Text                = "INVENTORY"
-invTitle.TextColor3          = C.textMuted
-invTitle.TextSize            = 11
-invTitle.Font                = Enum.Font.GothamBold
-invTitle.TextXAlignment      = Enum.TextXAlignment.Left
-invTitle.LayoutOrder         = 6
-invTitle.Parent              = content
+invTitle.Size, invTitle.BackgroundTransparency, invTitle.Text, invTitle.TextColor3, invTitle.TextSize, invTitle.Font, invTitle.TextXAlignment, invTitle.LayoutOrder = UDim2.new(1, 0, 0, 16), 1, "INVENTORY", C.textMuted, 9, Enum.Font.GothamBold, Enum.TextXAlignment.Left, 7
+invTitle.Parent = content
 
 local invScroll = Instance.new("ScrollingFrame")
-invScroll.Size               = UDim2.new(1, 0, 1, -240)
-invScroll.BackgroundColor3   = C.surface
-invScroll.BackgroundTransparency = 0.5
-invScroll.BorderSizePixel    = 0
-invScroll.ScrollBarThickness = 3
-invScroll.ScrollBarImageColor3 = C.accentDim
-invScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-invScroll.CanvasSize         = UDim2.new(0, 0, 0, 0)
-invScroll.LayoutOrder        = 7
-invScroll.Parent             = content
-corner(invScroll, 6)
-stroke(invScroll, C.border, 1, 0.6)
+invScroll.Size, invScroll.BackgroundColor3, invScroll.BackgroundTransparency, invScroll.BorderSizePixel, invScroll.ScrollBarThickness, invScroll.ScrollBarImageColor3, invScroll.AutomaticCanvasSize, invScroll.CanvasSize, invScroll.LayoutOrder = UDim2.new(1, 0, 1, -180), C.surface, 0.5, 0, 2, C.accentDim, Enum.AutomaticSize.Y, UDim2.new(0, 0, 0, 0), 8
+invScroll.Parent = content; corner(invScroll, 5); stroke(invScroll, C.border, 1, 0.5)
 
 local invLayout = Instance.new("UIListLayout")
-invLayout.SortOrder = Enum.SortOrder.LayoutOrder
-invLayout.Padding = UDim.new(0, 2)
+invLayout.SortOrder, invLayout.Padding = Enum.SortOrder.LayoutOrder, UDim.new(0, 2)
 invLayout.Parent = invScroll
 
-local invPadding = Instance.new("UIPadding")
-invPadding.PaddingTop = UDim.new(0, 4)
-invPadding.PaddingBottom = UDim.new(0, 4)
-invPadding.PaddingLeft = UDim.new(0, 6)
-invPadding.PaddingRight = UDim.new(0, 6)
-invPadding.Parent = invScroll
+local invPad = Instance.new("UIPadding")
+invPad.PaddingTop, invPad.PaddingBottom, invPad.PaddingLeft, invPad.PaddingRight = UDim.new(0, 3), UDim.new(0, 3), UDim.new(0, 5), UDim.new(0, 5)
+invPad.Parent = invScroll
 
--- Dynamic Inventory GUI Updater
 local function refreshInventory()
-    for _, child in ipairs(invScroll:GetChildren()) do
-        if child:IsA("Frame") then child:Destroy() end
+    for _, c in ipairs(invScroll:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+    local inv = player:FindFirstChild("inventory")
+    if not inv then
+        local n = Instance.new("TextLabel"); n.Size, n.BackgroundTransparency, n.Text, n.TextColor3, n.TextSize, n.Font = UDim2.new(1, 0, 0, 16), 1, "No inventory found", C.textMuted, 10, Enum.Font.Gotham; n.Parent = invScroll; return
     end
-
-    local invFolder = player:FindFirstChild("inventory")
-    if not invFolder then 
-        local noInv = Instance.new("TextLabel")
-        noInv.Size = UDim2.new(1, 0, 0, 20)
-        noInv.BackgroundTransparency = 1
-        noInv.Text = "No inventory found"
-        noInv.TextColor3 = C.textMuted
-        noInv.TextSize = 12
-        noInv.Font = Enum.Font.Gotham
-        noInv.LayoutOrder = 1
-        noInv.Parent = invScroll
-        return 
-    end
-
-    local items = invFolder:GetChildren()
+    local items = inv:GetChildren()
     if #items == 0 then
-        local empty = Instance.new("TextLabel")
-        empty.Size = UDim2.new(1, 0, 0, 20)
-        empty.BackgroundTransparency = 1
-        empty.Text = "Inventory is empty"
-        empty.TextColor3 = C.textMuted
-        empty.TextSize = 12
-        empty.Font = Enum.Font.Gotham
-        empty.LayoutOrder = 1
-        empty.Parent = invScroll
+        local e = Instance.new("TextLabel"); e.Size, e.BackgroundTransparency, e.Text, e.TextColor3, e.TextSize, e.Font = UDim2.new(1, 0, 0, 16), 1, "Inventory is empty", C.textMuted, 10, Enum.Font.Gotham; e.Parent = invScroll
     else
         for i, item in ipairs(items) do
             if item:IsA("ValueBase") then
-                local row = Instance.new("Frame")
-                row.Size = UDim2.new(1, 0, 0, 22)
-                row.BackgroundColor3 = C.elevated
-                row.BackgroundTransparency = 0.4
-                row.LayoutOrder = i
-                row.Parent = invScroll
-                corner(row, 4)
-
-                local nameLabel = Instance.new("TextLabel")
-                nameLabel.Size = UDim2.new(0.65, 0, 1, 0)
-                nameLabel.BackgroundTransparency = 1
-                nameLabel.Text = item.Name
-                nameLabel.TextColor3 = C.textPri
-                nameLabel.TextSize = 12
-                nameLabel.Font = Enum.Font.Gotham
-                nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-                nameLabel.Parent = row
-
-                local amountLabel = Instance.new("TextLabel")
-                amountLabel.Size = UDim2.new(0.35, 0, 1, 0)
-                amountLabel.Position = UDim2.new(0.65, 0, 0, 0)
-                amountLabel.BackgroundTransparency = 1
-                amountLabel.Text = formatSuffix(item.Value)
-                amountLabel.TextColor3 = C.accent
-                amountLabel.TextSize = 12
-                amountLabel.Font = Enum.Font.GothamBold
-                amountLabel.TextXAlignment = Enum.TextXAlignment.Right
-                amountLabel.Parent = row
-                
-                item:GetPropertyChangedSignal("Value"):Connect(function()
-                    if amountLabel and amountLabel.Parent then
-                        amountLabel.Text = formatSuffix(item.Value)
-                    end
-                end)
+                local row = Instance.new("Frame"); row.Size, row.BackgroundColor3, row.BackgroundTransparency, row.LayoutOrder = UDim2.new(1, 0, 0, 18), C.elevated, 0.4, i; row.Parent = invScroll; corner(row, 3)
+                local n = Instance.new("TextLabel"); n.Size, n.BackgroundTransparency, n.Text, n.TextColor3, n.TextSize, n.Font, n.TextXAlignment = UDim2.new(0.6, 0, 1, 0), 1, item.Name, C.textPri, 10, Enum.Font.Gotham, Enum.TextXAlignment.Left; n.Parent = row
+                local v = Instance.new("TextLabel"); v.Size, v.Position, v.BackgroundTransparency = UDim2.new(0.4, 0, 1, 0), UDim2.new(0.6, 0, 0, 0), 1
+                v.Text, v.TextColor3, v.TextSize, v.Font, v.TextXAlignment = formatSuffix(item.Value), C.accent, 10, Enum.Font.Code, Enum.TextXAlignment.Right; v.Parent = row
+                item:GetPropertyChangedSignal("Value"):Connect(function() if v and v.Parent then v.Text = formatSuffix(item.Value) end end)
             end
         end
     end
 end
 
--- Hook up inventory events
-local invFolderConn = player:WaitForChild("inventory", 10)
-if invFolderConn then
-    invFolderConn.ChildAdded:Connect(function() task.defer(refreshInventory) end)
-    invFolderConn.ChildRemoved:Connect(function() task.defer(refreshInventory) end)
+local invConn = player:WaitForChild("inventory", 10)
+if invConn then
+    invConn.ChildAdded:Connect(function() task.defer(refreshInventory) end)
+    invConn.ChildRemoved:Connect(function() task.defer(refreshInventory) end)
 end
 task.defer(refreshInventory)
 
--- ── Main Loop for Discord Updates ────────────────────────────
-RunService.Heartbeat:Connect(function()
-    if isLooping then
-        updateDiscord()
-    end
-end)
+-- ── Discord Update Loop ──────────────────────────────────────
+RunService.Heartbeat:Connect(function() if isLooping then updateDiscord() end end)
 
 -- ── Dragging ─────────────────────────────────────────────────
-local dragging, dragInput, dragStart, startPos
-
-titleBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = mainFrame.Position
-        
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
+local dragging, dragStart, startPos
+header.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+        dragging, dragStart, startPos = true, i.Position, main.Position
+        i.Changed:Connect(function() if i.UserInputState == Enum.UserInputState.End then dragging = false end end)
     end
 end)
-
-titleBar.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if input == dragInput and dragging then
-        local delta = input.Position - dragStart
-        mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+header.InputChanged:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch then dragInput = i end end)
+UserInputService.InputChanged:Connect(function(i)
+    if dragging and i == dragInput then
+        local d = i.Position - dragStart
+        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
     end
 end)
 
