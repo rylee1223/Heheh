@@ -5,11 +5,11 @@ local DEFAULT_CASE = 10   -- Which case to start on (1–10)
 
 local CONFIG = {
     -- Bot token and channel (shared)
-    BOT_TOKEN = "GITHUB_PLACEHOLDER", -- DO NOT PUT YOUR REAL TOKEN HERE!
+    BOT_TOKEN = "GITHUB_PLACEHOLDER", -- Loader replaces this securely
     CHANNEL_ID = "1517885492258013184",
 
     -- How often to update Discord messages (in minutes)
-    UPDATE_INTERVAL = 1,
+    UPDATE_INTERVAL = 5,
 
     -- 4 Player slots — fill in EXACT Roblox USERNAME + their message ID
     PLAYERS = {
@@ -30,10 +30,9 @@ local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 -- Anti-AFK
-local vu = VirtualUser
 player.Idled:Connect(function()
-    vu:CaptureController()
-    vu:ClickButton2(Vector2.new())
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
 end)
 
 -- Remove old GUI
@@ -116,13 +115,12 @@ end
 
 local function getInventoryString()
     local invFolder = player:FindFirstChild("inventory")
-    if not invFolder then return "Empty" end
+    if not invFolder then return "No Inventory Found" end
     local str = ""
     for _, item in pairs(invFolder:GetChildren()) do
         str = str .. item.Name .. ": " .. tostring(item.Value) .. "\n"
     end
     if str == "" then return "Empty" end
-    -- Truncate to fit Discord embed limits safely
     if #str > 1000 then return str:sub(1, 997) .. "..." end
     return str
 end
@@ -145,7 +143,7 @@ local function updateDiscord()
         content = " ",
         embeds = {{
             title  = "📦  Case Farmer — Player " .. slotIndex .. " Live",
-            color  = 3447003, -- Blue theme for case farmer
+            color  = 3447003, -- Blue theme
             fields = {
                 {name = "👤 Player",     value = "```" .. player.Name .. "```", inline = true},
                 {name = "💼 Cases Opened",value = "```" .. tostring(casesOpened) .. "```", inline = true},
@@ -154,7 +152,7 @@ local function updateDiscord()
                 {name = "⏱ Uptime",     value = "```" .. uptimeStr .. "```", inline = true},
                 {name = "🎒 Inventory",  value = "```\n" .. getInventoryString() .. "```", inline = false},
             },
-            footer    = {text = "Slot " .. slotIndex .. " of 4  •  Last updated"},
+            footer    = {text = "Slot " .. slotIndex .. " of 4  •  Updates every " .. CONFIG.UPDATE_INTERVAL .. " min"},
             timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
             thumbnail = {
                 url = "https://www.roblox.com/headshot-thumbnail/image?userId="
@@ -207,7 +205,7 @@ screenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
 screenGui.Parent          = playerGui
 
 -- ── Main Frame ───────────────────────────────────────────────
-local W, H = 260, 500
+local W, H = 260, 460 -- Increased height for inventory
 local mainFrame = Instance.new("Frame")
 mainFrame.Size              = UDim2.new(0, W, 0, H)
 mainFrame.Position          = UDim2.new(0.5, -W/2, 0.5, -H/2)
