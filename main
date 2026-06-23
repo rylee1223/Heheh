@@ -38,7 +38,7 @@ local CONFIG = {
 local PROMPT_PATH      = {"World Building", "Prompts", "CookFrozenFish", "Cook"}
 local AUTO_START_DELAY = 1
 local PROXIMITY_RADIUS = 5
-local FIRE_INTERVAL    = 0.1
+local FIRE_INTERVAL    = 0.4
 local TRACKED_ITEMS    = {"Frozen_Fish", "Diamond_Fish"}
 
 --------------------------------------------------------------------------------
