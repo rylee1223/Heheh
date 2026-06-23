@@ -159,7 +159,10 @@ local function getTimeStat()
     local stats = player:FindFirstChild("playerstats")
     if not stats then return 0 end
     local timeVal = stats:FindFirstChild("Time")
-    return timeVal and tonumber(timeVal.Value) or 0
+    if timeVal then
+        return tonumber(timeVal.Value) or 0
+    end
+    return 0
 end
 
 local function updateDiscord()
@@ -489,18 +492,40 @@ timeValueLabel.Font         = Enum.Font.GothamBold
 timeValueLabel.TextXAlignment = Enum.TextXAlignment.Right
 timeValueLabel.Parent       = timeRow
 
--- Bulletproof Time Stat Live Updater
+-- Bulletproof Time Stat Live Updater (Uses a 1-second loop instead of listeners)
 task.spawn(function()
-    -- Explicitly wait for the exact path: player -> playerstats -> Time
-    local statsFolder = player:WaitForChild("playerstats")
-    local timeStat = statsFolder:WaitForChild("Time")
-    
-    local function updateTime()
-        timeValueLabel.Text = formatSuffix(timeStat.Value)
+    local statsFolder = player:WaitForChild("playerstats", 30)
+    if not statsFolder then
+        timeValueLabel.Text = "N/A"
+        warn("[Case Farmer] Could not find 'playerstats' folder!")
+        return
     end
     
-    timeStat:GetPropertyChangedSignal("Value"):Connect(updateTime)
-    updateTime() -- Run once instantly when found
+    -- Debug: Print what is actually inside the playerstats folder
+    warn("[Case Farmer] Scanning playerstats folder...")
+    for _, child in pairs(statsFolder:GetChildren()) do
+        warn("[Case Farmer] Found object: '" .. child.Name .. "' (Type: " .. child.ClassName .. ")")
+    end
+    
+    local timeStat = statsFolder:WaitForChild("Time", 30)
+    if not timeStat then
+        timeValueLabel.Text = "N/A"
+        warn("[Case Farmer] Could not find 'Time' object inside playerstats!")
+        return
+    end
+    
+    warn("[Case Farmer] Successfully found Time object! Current Value: " .. tostring(timeStat.Value))
+    
+    -- Loop constantly to force update the value
+    while task.wait(1) do
+        if timeStat and timeStat.Parent then
+            local val = tonumber(timeStat.Value) or 0
+            timeValueLabel.Text = formatSuffix(val)
+        else
+            timeValueLabel.Text = "Lost"
+            break
+        end
+    end
 end)
 
 -- ── Inventory Section ────────────────────────────────────────
