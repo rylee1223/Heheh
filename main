@@ -1,5 +1,5 @@
 -- ============================================================
---  CASE FARMER GUI — MAXIMUM SPEED (FIXED & OPTIMIZED)
+--  CASE FARMER GUI — MAXIMUM SPEED (HYPER-SPEED TRIGGER)
 -- ============================================================
 local DEFAULT_CASE = 9
 
@@ -38,6 +38,7 @@ if pgui:FindFirstChild("CFG") then pgui.CFG:Destroy() end
 -- ═══════════════════════════════════════════════════════════
 local sel = DEFAULT_CASE
 local loop = false
+local conn = nil
 local opened = 0
 local startT = 0
 local lastDiscord = 0
@@ -78,14 +79,14 @@ local function fire()
         cachePrompt(); 
         if not prompt then return end 
     end
-    if not prompt.Enabled then return end -- Don't fire if case is on cooldown/opening
-    
+    -- Count attempt
     opened = opened + 1
+    
     if firepp then
         firepp(prompt)
     else
+        -- Fallback instantly
         prompt:InputHoldBegin()
-        task.wait()
         prompt:InputHoldEnd()
     end
 end
@@ -112,7 +113,7 @@ local function getInvData()
             if (it:IsA("IntValue") or it:IsA("NumberValue")) and it.Value > 0 then
                 t[#t+1] = it.Name .. ": " .. fmt(it.Value)
             elseif it:IsA("Folder") then
-                scan(it) -- Search inside sub-folders
+                scan(it)
             end
         end
     end
@@ -173,7 +174,7 @@ local function updateDiscord()
     end)
 end
 
--- Dedicated thread for Discord updates (No more Heartbeat spam)
+-- Dedicated thread for Discord updates
 task.spawn(function()
     while task.wait(CONFIG.UPDATE_INTERVAL * 60) do
         if loop then updateDiscord() end
@@ -181,7 +182,7 @@ task.spawn(function()
 end)
 
 -- ═══════════════════════════════════════════════════════════
---  MINIMAL GUI (FIXED LAYOUT & INV DISPLAY)
+--  MINIMAL GUI
 -- ═══════════════════════════════════════════════════════════
 local C3 = Color3.fromRGB
 local C = {
@@ -195,7 +196,7 @@ gui.Name, gui.ResetOnSpawn = "CFG", false
 gui.Parent = pgui
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0,240,0,480) -- Taller to fit inventory
+main.Size = UDim2.new(0,240,0,480)
 main.Position = UDim2.new(0.5,-120,0.5,-240)
 main.BackgroundColor3 = C.bg
 main.BorderSizePixel = 0
@@ -237,7 +238,7 @@ content.Position = UDim2.new(0,6,0,39)
 content.BackgroundTransparency = 1
 content.Parent = main
 
--- Case selector (ZIndex fixed so it drops OVER other elements)
+-- Case selector
 local caseFrame = Instance.new("TextButton")
 caseFrame.Size = UDim2.new(1,0,0,30)
 caseFrame.BackgroundColor3 = C.card
@@ -253,7 +254,7 @@ local casePad = Instance.new("UIPadding", caseFrame)
 casePad.PaddingLeft = UDim.new(0,10)
 
 local caseList = Instance.new("Frame")
-caseList.Size = UDim2.new(1,0,0,220) -- Fixed: 10 cases * 22px each
+caseList.Size = UDim2.new(1,0,0,220)
 caseList.BackgroundColor3 = C.card
 caseList.BorderSizePixel = 0
 caseList.Visible = false
@@ -441,7 +442,7 @@ task.spawn(function()
 end)
 
 -- ═══════════════════════════════════════════════════════════
---  FARMING LOGIC (FIXED LOOP)
+--  FARMING LOGIC (HYPER-SPEED HEARTBEAT)
 -- ═══════════════════════════════════════════════════════════
 local function startFarming()
     if loop then return end
@@ -453,12 +454,8 @@ local function startFarming()
     farmBtn.BackgroundColor3 = C.dangerDark
     cachePrompt()
     
-    task.spawn(function()
-        while loop do
-            fire()
-            task.wait(0.5) -- Safe firing rate to prevent server rejection/breaking the case prompt
-        end
-    end)
+    -- ABSOLUTE MAXIMUM SPEED: Fires every single frame (~60 times a second)
+    conn = RunService.Heartbeat:Connect(fire)
 end
 
 local function stopFarming()
@@ -467,6 +464,7 @@ local function stopFarming()
     farmBtn.Text = "▶ START"
     farmBtn.TextColor3 = C.amber
     farmBtn.BackgroundColor3 = C.amberDark
+    if conn then conn:Disconnect(); conn = nil end
     updateDiscord()
 end
 
