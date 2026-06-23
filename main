@@ -49,11 +49,6 @@ local startTime      = 0
 local lastUpdateTime = 0
 local casesOpened    = 0
 
--- ── Wait for Data Folders securely ──────────────────────────
-local playerstatsFolder = player:WaitForChild("playerstats", 120)
-local timeValueObject = playerstatsFolder and playerstatsFolder:WaitForChild("Time", 120) or nil
-local invFolder = player:WaitForChild("inventory", 120)
-
 -- ── Discord Slot Finder ──────────────────────────────────────
 local mySlot = nil
 for _, slot in pairs(CONFIG.PLAYERS) do
@@ -65,7 +60,6 @@ end
 local linkedMessageId = (mySlot and mySlot.MESSAGE_ID ~= "") and mySlot.MESSAGE_ID or nil
 
 -- ── Number Formatters ────────────────────────────────────────
--- Converts 685578060 to 685.58M
 local function formatSuffix(num)
     if not num then return "0" end
     num = tonumber(num) or 0
@@ -82,7 +76,6 @@ local function formatSuffix(num)
     end
 end
 
--- Converts 685578060 to 685,578,060
 local function formatCommas(num)
     if not num then return "0" end
     num = tonumber(num) or 0
@@ -149,6 +142,7 @@ local function discordRequest(method, endpoint, body)
 end
 
 local function getInventoryString()
+    local invFolder = player:FindFirstChild("inventory")
     if not invFolder then return "No Inventory Found" end
     local str = ""
     for _, item in pairs(invFolder:GetChildren()) do
@@ -162,10 +156,10 @@ local function getInventoryString()
 end
 
 local function getTimeStat()
-    if timeValueObject then
-        return tonumber(timeValueObject.Value) or 0
-    end
-    return 0
+    local stats = player:FindFirstChild("playerstats")
+    if not stats then return 0 end
+    local timeVal = stats:FindFirstChild("Time")
+    return timeVal and tonumber(timeVal.Value) or 0
 end
 
 local function updateDiscord()
@@ -189,7 +183,7 @@ local function updateDiscord()
         content = " ",
         embeds = {{
             title  = "📦  Case Farmer — Player " .. slotIndex .. " Live",
-            color  = 3447003, -- Blue theme
+            color  = 3447003,
             fields = {
                 {name = "👤 Player",     value = "```" .. player.Name .. "```", inline = true},
                 {name = "💼 Cases Opened",value = "```" .. tostring(casesOpened) .. "```", inline = true},
@@ -488,24 +482,25 @@ local timeValueLabel = Instance.new("TextLabel")
 timeValueLabel.Size         = UDim2.new(0.6, 0, 1, 0)
 timeValueLabel.Position     = UDim2.new(0.4, 0, 0, 0)
 timeValueLabel.BackgroundTransparency = 1
-timeValueLabel.Text         = "0"
+timeValueLabel.Text         = "Loading..."
 timeValueLabel.TextColor3   = C.accent
 timeValueLabel.TextSize     = 13
 timeValueLabel.Font         = Enum.Font.GothamBold
 timeValueLabel.TextXAlignment = Enum.TextXAlignment.Right
 timeValueLabel.Parent       = timeRow
 
--- Time Stat Live Updater
+-- Bulletproof Time Stat Live Updater
 task.spawn(function()
-    if timeValueObject then
-        local function updateTime()
-            timeValueLabel.Text = formatSuffix(timeValueObject.Value)
-        end
-        timeValueObject:GetPropertyChangedSignal("Value"):Connect(updateTime)
-        updateTime()
-    else
-        timeValueLabel.Text = "N/A"
+    -- Explicitly wait for the exact path: player -> playerstats -> Time
+    local statsFolder = player:WaitForChild("playerstats")
+    local timeStat = statsFolder:WaitForChild("Time")
+    
+    local function updateTime()
+        timeValueLabel.Text = formatSuffix(timeStat.Value)
     end
+    
+    timeStat:GetPropertyChangedSignal("Value"):Connect(updateTime)
+    updateTime() -- Run once instantly when found
 end)
 
 -- ── Inventory Section ────────────────────────────────────────
@@ -559,6 +554,7 @@ local function refreshInventory()
         if child:IsA("Frame") then child:Destroy() end
     end
 
+    local invFolder = player:FindFirstChild("inventory")
     if not invFolder then 
         local noInv = Instance.new("TextLabel")
         noInv.Size = UDim2.new(1, 0, 0, 20)
@@ -626,9 +622,10 @@ local function refreshInventory()
 end
 
 -- Hook up inventory events
-if invFolder then
-    invFolder.ChildAdded:Connect(function() task.defer(refreshInventory) end)
-    invFolder.ChildRemoved:Connect(function() task.defer(refreshInventory) end)
+local invFolderConn = player:WaitForChild("inventory", 10)
+if invFolderConn then
+    invFolderConn.ChildAdded:Connect(function() task.defer(refreshInventory) end)
+    invFolderConn.ChildRemoved:Connect(function() task.defer(refreshInventory) end)
 end
 task.defer(refreshInventory)
 
