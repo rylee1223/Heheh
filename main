@@ -9,7 +9,7 @@ local CONFIG = {
     -- How often to update messages (in minutes)
     UPDATE_INTERVAL = 1,
 
-    -- 4 Player slots — fill in Roblox username + their message ID
+    -- 4 Player slots — fill in EXACT Roblox USERNAME (Not DisplayName) + their message ID
     -- Leave MESSAGE_ID as "" to disable Discord updates for that player
     PLAYERS = {
         {USERNAME = "Build3r_MAGIC2012", MESSAGE_ID = "1518758643166875681"},
@@ -104,7 +104,7 @@ end
 --// edits that slot's message by ID (no new messages created).
 --// ================================================
 
--- Find which CONFIG.PLAYERS slot belongs to this player
+-- Find which CONFIG.PLAYERS slot belongs to this player (Strictly using Username via player.Name)
 local mySlot = nil
 for _, slot in pairs(CONFIG.PLAYERS) do
     if string.lower(slot.USERNAME) == string.lower(player.Name) then
@@ -142,7 +142,7 @@ local function discordRequest(method, endpoint, body)
     return result
 end
 
--- Build embed for this player
+-- Build embed for this player (Uses player.Name for Username)
 local function buildEmbed(collected, rate, elapsed, currentTotal)
     local uptimeStr = string.format(
         "%02d:%02d", math.floor(elapsed/60), math.floor(elapsed%60)
