@@ -3,7 +3,7 @@
 --// ========================================
 local CONFIG = {
     -- Bot token and channel (shared)
-    BOT_TOKEN  = "", -- DO NOT PUT YOUR REAL TOKEN HERE!
+    BOT_TOKEN = "GITHUB_PLACEHOLDER", -- DO NOT PUT YOUR REAL TOKEN HERE! The loader injects it.
     CHANNEL_ID = "1517885492258013184",
 
     -- How often to update messages (in minutes)
@@ -100,11 +100,8 @@ end
 
 --// ================================================
 --// MULTI-PLAYER DISCORD BOT SYSTEM
---// Finds which slot matches this player, then
---// edits that slot's message by ID (no new messages created).
 --// ================================================
 
--- Find which CONFIG.PLAYERS slot belongs to this player (Strictly using Username via player.Name)
 local mySlot = nil
 for _, slot in pairs(CONFIG.PLAYERS) do
     if string.lower(slot.USERNAME) == string.lower(player.Name) then
@@ -113,11 +110,10 @@ for _, slot in pairs(CONFIG.PLAYERS) do
     end
 end
 
--- Runtime message ID (must be provided in config to edit)
 local linkedMessageId = (mySlot and mySlot.MESSAGE_ID ~= "") and mySlot.MESSAGE_ID or nil
 
 local function discordRequest(method, endpoint, body)
-    if CONFIG.BOT_TOKEN == "" or CONFIG.CHANNEL_ID == "" then return nil, "Missing Token/Channel" end
+    if CONFIG.BOT_TOKEN == "" or CONFIG.BOT_TOKEN == "GITHUB_PLACEHOLDER" or CONFIG.CHANNEL_ID == "" then return nil, "Missing Token/Channel" end
     local req = (syn and syn.request)
              or (http and http.request)
              or http_request
@@ -157,7 +153,6 @@ local function discordRequest(method, endpoint, body)
     return nil, "No response"
 end
 
--- Build embed for this player (Uses player.Name for Username)
 local function buildEmbed(collected, rate, elapsed, currentTotal)
     local uptimeStr = string.format(
         "%02d:%02d", math.floor(elapsed/60), math.floor(elapsed%60)
@@ -170,7 +165,7 @@ local function buildEmbed(collected, rate, elapsed, currentTotal)
     end
 
     return {
-        content = " ", -- Discord requires content to not be empty if embeds are missing, added space for safety
+        content = " ",
         embeds = {{
             title  = "🎁  Gift Farmer — Player " .. slotIndex .. " Live",
             color  = 14680064,
@@ -192,11 +187,10 @@ local function buildEmbed(collected, rate, elapsed, currentTotal)
     }
 end
 
--- Edit the message for this player (Does NOT create new messages)
 local function updateDiscord(collected, rate, elapsed)
-    if CONFIG.BOT_TOKEN == "" or CONFIG.CHANNEL_ID == "" then return end
-    if not mySlot then return end -- this player is not in the PLAYERS list
-    if not linkedMessageId then return end -- no message ID provided
+    if CONFIG.BOT_TOKEN == "" or CONFIG.BOT_TOKEN == "GITHUB_PLACEHOLDER" or CONFIG.CHANNEL_ID == "" then return end
+    if not mySlot then return end
+    if not linkedMessageId then return end
 
     local now = tick()
     if now - lastUpdateTime < (CONFIG.UPDATE_INTERVAL * 60) then return end
@@ -206,7 +200,6 @@ local function updateDiscord(collected, rate, elapsed)
     local embedData    = buildEmbed(collected, rate, elapsed, currentTotal)
 
     task.spawn(function()
-        -- PATCH = strictly edit existing message by ID
         local result, err = discordRequest(
             "PATCH",
             "/channels/" .. CONFIG.CHANNEL_ID .. "/messages/" .. linkedMessageId,
@@ -254,7 +247,6 @@ mainStroke.Thickness = 1.5
 mainStroke.Color = Color3.fromRGB(200, 30, 60)
 mainStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 
--- Border pulse
 task.spawn(function()
     local t = 0
     while task.wait(0.03) do
@@ -269,7 +261,6 @@ task.spawn(function()
     end
 end)
 
--- BG gradient
 Instance.new("UIGradient", main).Color = ColorSequence.new({
     ColorSequenceKeypoint.new(0,   Color3.fromRGB(14, 8,  20)),
     ColorSequenceKeypoint.new(0.5, Color3.fromRGB(10, 6,  16)),
@@ -297,7 +288,6 @@ Instance.new("UIGradient", header).Color = ColorSequence.new({
     ColorSequenceKeypoint.new(1,   Color3.fromRGB(120, 8,  30))
 })
 
--- Shine sweep
 local shine = Instance.new("Frame", header)
 shine.Size = UDim2.new(0.25, 0, 1, 0)
 shine.Position = UDim2.new(-0.3, 0, 0, 0)
@@ -318,7 +308,6 @@ task.spawn(function()
     end
 end)
 
--- Icon
 local iconBg = Instance.new("Frame", header)
 iconBg.Size = UDim2.new(0, 46, 0, 46)
 iconBg.Position = UDim2.new(0, 13, 0.5, -23)
@@ -357,7 +346,6 @@ subLbl.TextSize = 10
 subLbl.TextXAlignment = Enum.TextXAlignment.Left
 subLbl.ZIndex = 5
 
--- Close
 local closeBtn = Instance.new("TextButton", header)
 closeBtn.Size = UDim2.new(0, 30, 0, 30)
 closeBtn.Position = UDim2.new(1, -40, 0.5, -15)
@@ -382,7 +370,6 @@ closeBtn.MouseButton1Click:Connect(function()
 end)
 
 --// SLOT INDICATOR PANEL
--- Shows all 4 players and which slot is "me"
 local slotPanel = Instance.new("Frame", main)
 slotPanel.Size = UDim2.new(0.9, 0, 0, 38)
 slotPanel.Position = UDim2.new(0.05, 0, 0, 82)
@@ -496,7 +483,6 @@ makeDivider(statsPanel, 93)
 makeDivider(statsPanel, 123)
 makeDivider(statsPanel, 153)
 
--- Discord status row
 local discordLabel = Instance.new("TextLabel", statsPanel)
 discordLabel.Size = UDim2.new(1, -20, 0, 16)
 discordLabel.Position = UDim2.new(0, 10, 1, -20)
@@ -506,7 +492,7 @@ discordLabel.TextSize = 9
 discordLabel.TextXAlignment = Enum.TextXAlignment.Left
 discordLabel.ZIndex = 4
 
-if CONFIG.BOT_TOKEN ~= "" and CONFIG.CHANNEL_ID ~= "" then
+if CONFIG.BOT_TOKEN ~= "" and CONFIG.BOT_TOKEN ~= "GITHUB_PLACEHOLDER" and CONFIG.CHANNEL_ID ~= "" then
     if mySlot then
         local hasMsg = (mySlot.MESSAGE_ID ~= "")
         discordLabel.Text = hasMsg
@@ -524,7 +510,6 @@ else
     discordLabel.TextColor3 = Color3.fromRGB(100, 60, 80)
 end
 
--- Status dot
 local dot = Instance.new("Frame", statsPanel)
 dot.Size = UDim2.new(0, 9, 0, 9)
 dot.Position = UDim2.new(1, -16, 0, 13)
@@ -549,7 +534,6 @@ task.spawn(function()
     end
 end)
 
--- Accent bar pulse
 task.spawn(function()
     local t = 0
     local bars = {statusBar, gainedBar, totalBar, timeBar, distBar, rateBar}
@@ -650,7 +634,7 @@ end
 setupBeam()
 player.CharacterAdded:Connect(function() task.wait(0.5) setupBeam() end)
 
---// ESP — CLOSEST ONLY
+--// ESP
 local espTarget, espSphere, espBox, espBill, espThread = nil, nil, nil, nil, nil
 
 local function clearESP()
@@ -841,7 +825,7 @@ local function startFarming()
     lastKnownValue = startVal
     lastPos        = Vector3.zero
     lastCheckTime  = tick()
-    lastUpdateTime = 0 -- Changed from tick() to 0 so it updates Discord instantly on start
+    lastUpdateTime = 0
     farmBtn.Text   = "■   STOP AUTO-FARM"
     farmBtn:FindFirstChildOfClass("UIStroke").Color = Color3.fromRGB(0, 200, 100)
     TweenService:Create(mainStroke, TweenInfo.new(0.3), {Color = Color3.fromRGB(0, 210, 110)}):Play()
