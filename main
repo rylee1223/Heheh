@@ -1,5 +1,5 @@
--[[
-    Auto Cook Frozen Fish + Discord (Multi-player message editing)
+--[[
+    Auto Cook Fish + Discord (Multi-player message editing)
     - Caps FPS to 12
     - Deletes any model named "ant"
     - Places a baseplate under the player
@@ -180,17 +180,17 @@ local function updateDiscordMessage()
     local uptime = os.date("!%H:%M:%S", tick() - startTime)
 
     local embed = {
-        title = "ð Auto Cook â " .. playerName,
+        title = "🐟 Auto Cook – " .. playerName,
         color = 3447003,
         fields = {
-            { name = "Status",         value = isRunning and "â Running" or "â¸ï¸ Idle",        inline = true },
+            { name = "Status",         value = isRunning and "✅ Running" or "⏸️ Idle",        inline = true },
             { name = "Activations",    value = "```"..tostring(activationCount).."```",        inline = true },
             { name = "Big Fish",       value = "```"..tostring(bigCount).."```",               inline = true },
             { name = "Golden Fish",    value = "```"..tostring(goldenCount).."```",            inline = true },
             { name = "Uptime",         value = "```"..uptime.."```",                           inline = true },
         },
         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        footer = { text = "Slot " .. tostring(mySlot) .. " â¢ Updates every " .. CONFIG.UPDATE_INTERVAL .. " min" },
+        footer = { text = "Slot " .. tostring(mySlot) .. " • Updates every " .. CONFIG.UPDATE_INTERVAL .. " min" },
         thumbnail = { url = "https://www.roblox.com/headshot-thumbnail/image?userId="..player.UserId.."&width=420&height=420&format=png" }
     }
 
@@ -326,7 +326,7 @@ local function createGUI()
     titleLabel.Size = UDim2.new(1,-12,1,0)
     titleLabel.Position = UDim2.new(0,12,0,0)
     titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "ð Auto Cook + Discord"
+    titleLabel.Text = "🐟 Auto Cook + Discord"
     titleLabel.TextColor3 = Color3.fromRGB(240,240,240)
     titleLabel.TextSize = 14
     titleLabel.Font = Enum.Font.GothamBold
@@ -371,7 +371,7 @@ local function createGUI()
     gLbl.Position = UDim2.new(0,6,0,100)
     gLbl.BackgroundTransparency = 1
     gLbl.Text = "Golden Fish: ?"
-    gLbl.TextColor3 = Color3.fromRGB(255,215,0)
+    gLbl.TextColor3 = Color3.fromRGB(255,215,0) -- Gold color for Golden Fish
     gLbl.TextSize = 11
     gLbl.Font = Enum.Font.Gotham
     gLbl.TextXAlignment = Enum.TextXAlignment.Left
@@ -403,8 +403,8 @@ local function createGUI()
         return btn
     end
 
-    local sBtn = makeButton("â¶ Start", Color3.fromRGB(45,160,45))
-    local stpBtn = makeButton("â¹ Stop", Color3.fromRGB(180,45,45))
+    local sBtn = makeButton("▶ Start", Color3.fromRGB(45,160,45))
+    local stpBtn = makeButton("■ Stop", Color3.fromRGB(180,45,45))
 
     -- Drag
     local dragging, dragStart, startPos
@@ -525,4 +525,4 @@ gui.AncestryChanged:Connect(function()
     end
 end)
 
-print("[AutoCook+D] Loaded â 12 FPS cap, ant models deleted, baseplate placed, walking, tracking Big_Fish & Golden_Fish, Discord editing")
+print("[AutoCook+D] Loaded – 12 FPS cap, ant models deleted, baseplate placed, walking, tracking Big & Golden fish, Discord editing")
