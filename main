@@ -43,11 +43,16 @@ end
 -- ── State ────────────────────────────────────────────────────
 local selectedCase   = DEFAULT_CASE
 local isLooping      = false
-local farmConnection = nil -- Changed to connection for Heartbeat
+local farmConnection = nil
 local dropdownOpen   = false
 local startTime      = 0
 local lastUpdateTime = 0
 local casesOpened    = 0
+
+-- ── Wait for Data Folders securely ──────────────────────────
+local playerstatsFolder = player:WaitForChild("playerstats", 120)
+local timeValueObject = playerstatsFolder and playerstatsFolder:WaitForChild("Time", 120) or nil
+local invFolder = player:WaitForChild("inventory", 120)
 
 -- ── Discord Slot Finder ──────────────────────────────────────
 local mySlot = nil
@@ -59,9 +64,9 @@ for _, slot in pairs(CONFIG.PLAYERS) do
 end
 local linkedMessageId = (mySlot and mySlot.MESSAGE_ID ~= "") and mySlot.MESSAGE_ID or nil
 
--- ── Number Formatter (K, M, B, T) ───────────────────────────
--- Transforms 685578060 into 685.58M
-local function formatNumber(num)
+-- ── Number Formatters ────────────────────────────────────────
+-- Converts 685578060 to 685.58M
+local function formatSuffix(num)
     if not num then return "0" end
     num = tonumber(num) or 0
     if num >= 1e12 then
@@ -75,6 +80,19 @@ local function formatNumber(num)
     else
         return tostring(math.floor(num))
     end
+end
+
+-- Converts 685578060 to 685,578,060
+local function formatCommas(num)
+    if not num then return "0" end
+    num = tonumber(num) or 0
+    local s = tostring(math.floor(num))
+    local k
+    while true do
+        s, k = string.gsub(s, "^(-?%d+)(%d%d%d)", '%1,%2')
+        if k == 0 then break end
+    end
+    return s
 end
 
 -- ── Helpers ──────────────────────────────────────────────────
@@ -96,7 +114,6 @@ local function firePrompt(prompt)
     if fireproximityprompt then
         fireproximityprompt(prompt)
     else
-        -- Fallback optimized for 60/s speed (no task.wait yielding)
         prompt:InputHoldBegin()
         prompt:InputHoldEnd()
     end
@@ -132,11 +149,12 @@ local function discordRequest(method, endpoint, body)
 end
 
 local function getInventoryString()
-    local invFolder = player:FindFirstChild("inventory")
     if not invFolder then return "No Inventory Found" end
     local str = ""
     for _, item in pairs(invFolder:GetChildren()) do
-        str = str .. item.Name .. ": " .. formatNumber(item.Value) .. "\n"
+        if item:IsA("ValueBase") then
+            str = str .. item.Name .. ": " .. formatSuffix(item.Value) .. "\n"
+        end
     end
     if str == "" then return "Empty" end
     if #str > 1000 then return str:sub(1, 997) .. "..." end
@@ -144,10 +162,10 @@ local function getInventoryString()
 end
 
 local function getTimeStat()
-    local stats = player:FindFirstChild("playerstats")
-    if not stats then return 0 end
-    local timeVal = stats:FindFirstChild("Time")
-    return timeVal and tonumber(timeVal.Value) or 0
+    if timeValueObject then
+        return tonumber(timeValueObject.Value) or 0
+    end
+    return 0
 end
 
 local function updateDiscord()
@@ -164,6 +182,9 @@ local function updateDiscord()
         if s == mySlot then slotIndex = tostring(i) break end
     end
 
+    local timeStatRaw = getTimeStat()
+    local timeDisplayDiscord = formatCommas(timeStatRaw) .. " (" .. formatSuffix(timeStatRaw) .. ")"
+
     local embedData = {
         content = " ",
         embeds = {{
@@ -175,7 +196,7 @@ local function updateDiscord()
                 {name = "🎯 Case Type",  value = "```Case " .. tostring(selectedCase) .. "```", inline = true},
                 {name = "📡 Status",     value = "```" .. (isLooping and "Farming" or "Idle") .. "```", inline = true},
                 {name = "⏱ Uptime",     value = "```" .. uptimeStr .. "```", inline = true},
-                {name = "⏳ Time Stat",  value = "```" .. formatNumber(getTimeStat()) .. "```", inline = true},
+                {name = "⏳ Time Stat",  value = "```" .. timeDisplayDiscord .. "```", inline = true},
                 {name = "🎒 Inventory",  value = "```\n" .. getInventoryString() .. "```", inline = false},
             },
             footer    = {text = "Slot " .. slotIndex .. " of 4  •  Updates every " .. CONFIG.UPDATE_INTERVAL .. " min"},
@@ -410,7 +431,6 @@ local function startFarming()
     casesOpened = 0
     lastUpdateTime = 0
     
-    -- Run on Heartbeat for max speed (~60 times per second)
     farmConnection = RunService.Heartbeat:Connect(function()
         local prompt = getPrompt(selectedCase)
         firePrompt(prompt)
@@ -477,18 +497,12 @@ timeValueLabel.Parent       = timeRow
 
 -- Time Stat Live Updater
 task.spawn(function()
-    local statsFolder = player:WaitForChild("playerstats", 10)
-    if statsFolder then
-        local timeStat = statsFolder:WaitForChild("Time", 10)
-        if timeStat then
-            local function updateTime()
-                timeValueLabel.Text = formatNumber(timeStat.Value)
-            end
-            timeStat.Changed:Connect(updateTime)
-            updateTime()
-        else
-            timeValueLabel.Text = "N/A"
+    if timeValueObject then
+        local function updateTime()
+            timeValueLabel.Text = formatSuffix(timeValueObject.Value)
         end
+        timeValueObject:GetPropertyChangedSignal("Value"):Connect(updateTime)
+        updateTime()
     else
         timeValueLabel.Text = "N/A"
     end
@@ -545,7 +559,6 @@ local function refreshInventory()
         if child:IsA("Frame") then child:Destroy() end
     end
 
-    local invFolder = player:FindFirstChild("inventory")
     if not invFolder then 
         local noInv = Instance.new("TextLabel")
         noInv.Size = UDim2.new(1, 0, 0, 20)
@@ -572,46 +585,47 @@ local function refreshInventory()
         empty.Parent = invScroll
     else
         for i, item in ipairs(items) do
-            local row = Instance.new("Frame")
-            row.Size = UDim2.new(1, 0, 0, 22)
-            row.BackgroundColor3 = C.elevated
-            row.BackgroundTransparency = 0.4
-            row.LayoutOrder = i
-            row.Parent = invScroll
-            corner(row, 4)
+            if item:IsA("ValueBase") then
+                local row = Instance.new("Frame")
+                row.Size = UDim2.new(1, 0, 0, 22)
+                row.BackgroundColor3 = C.elevated
+                row.BackgroundTransparency = 0.4
+                row.LayoutOrder = i
+                row.Parent = invScroll
+                corner(row, 4)
 
-            local nameLabel = Instance.new("TextLabel")
-            nameLabel.Size = UDim2.new(0.65, 0, 1, 0)
-            nameLabel.BackgroundTransparency = 1
-            nameLabel.Text = item.Name
-            nameLabel.TextColor3 = C.textPri
-            nameLabel.TextSize = 12
-            nameLabel.Font = Enum.Font.Gotham
-            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-            nameLabel.Parent = row
+                local nameLabel = Instance.new("TextLabel")
+                nameLabel.Size = UDim2.new(0.65, 0, 1, 0)
+                nameLabel.BackgroundTransparency = 1
+                nameLabel.Text = item.Name
+                nameLabel.TextColor3 = C.textPri
+                nameLabel.TextSize = 12
+                nameLabel.Font = Enum.Font.Gotham
+                nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+                nameLabel.Parent = row
 
-            local amountLabel = Instance.new("TextLabel")
-            amountLabel.Size = UDim2.new(0.35, 0, 1, 0)
-            amountLabel.Position = UDim2.new(0.65, 0, 0, 0)
-            amountLabel.BackgroundTransparency = 1
-            amountLabel.Text = formatNumber(item.Value)
-            amountLabel.TextColor3 = C.accent
-            amountLabel.TextSize = 12
-            amountLabel.Font = Enum.Font.GothamBold
-            amountLabel.TextXAlignment = Enum.TextXAlignment.Right
-            amountLabel.Parent = row
-            
-            item.Changed:Connect(function()
-                if amountLabel and amountLabel.Parent then
-                    amountLabel.Text = formatNumber(item.Value)
-                end
-            end)
+                local amountLabel = Instance.new("TextLabel")
+                amountLabel.Size = UDim2.new(0.35, 0, 1, 0)
+                amountLabel.Position = UDim2.new(0.65, 0, 0, 0)
+                amountLabel.BackgroundTransparency = 1
+                amountLabel.Text = formatSuffix(item.Value)
+                amountLabel.TextColor3 = C.accent
+                amountLabel.TextSize = 12
+                amountLabel.Font = Enum.Font.GothamBold
+                amountLabel.TextXAlignment = Enum.TextXAlignment.Right
+                amountLabel.Parent = row
+                
+                item:GetPropertyChangedSignal("Value"):Connect(function()
+                    if amountLabel and amountLabel.Parent then
+                        amountLabel.Text = formatSuffix(item.Value)
+                    end
+                end)
+            end
         end
     end
 end
 
 -- Hook up inventory events
-local invFolder = player:WaitForChild("inventory", 10)
 if invFolder then
     invFolder.ChildAdded:Connect(function() task.defer(refreshInventory) end)
     invFolder.ChildRemoved:Connect(function() task.defer(refreshInventory) end)
