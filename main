@@ -1,5 +1,5 @@
 -- ============================================================
---  CASE FARMER GUI — MAXIMUM SPEED
+--  CASE FARMER GUI — MAXIMUM SPEED (FIXED & OPTIMIZED)
 -- ============================================================
 local DEFAULT_CASE = 9
 
@@ -15,7 +15,7 @@ local CONFIG = {
     },
 }
 
--- Direct service references (no function call overhead)
+-- Direct service references
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
@@ -38,7 +38,6 @@ if pgui:FindFirstChild("CFG") then pgui.CFG:Destroy() end
 -- ═══════════════════════════════════════════════════════════
 local sel = DEFAULT_CASE
 local loop = false
-local conn = nil
 local opened = 0
 local startT = 0
 local lastDiscord = 0
@@ -75,44 +74,61 @@ end
 -- Lightning fast fire
 local firepp = fireproximityprompt
 local function fire()
-    if not prompt then cachePrompt(); if not prompt then return end end
+    if not prompt or prompt.Parent == nil then 
+        cachePrompt(); 
+        if not prompt then return end 
+    end
+    if not prompt.Enabled then return end -- Don't fire if case is on cooldown/opening
+    
     opened = opened + 1
     if firepp then
         firepp(prompt)
     else
         prompt:InputHoldBegin()
+        task.wait()
         prompt:InputHoldEnd()
     end
 end
 
 -- ═══════════════════════════════════════════════════════════
---  DISCORD (non-blocking)
+--  ROBUST INVENTORY LOGIC
 -- ═══════════════════════════════════════════════════════════
-local function fmt(n) -- Fast suffix, no allocations
+local function fmt(n)
     n = tonumber(n) or 0
     if n >= 1e12 then return ("%.2fT"):format(n/1e12)
     elseif n >= 1e9 then return ("%.2fB"):format(n/1e9)
     elseif n >= 1e6 then return ("%.2fM"):format(n/1e6)
     elseif n >= 1e3 then return ("%.2fK"):format(n/1e3)
-    else return tostring(n - n%1) end
+    else return tostring(math.floor(n)) end
 end
 
+local function getInvData()
+    local pinv = player:FindFirstChild("inventory") or player:FindFirstChild("Inventory")
+    if not pinv then return "No Inv Folder" end
+    local t = {}
+    
+    local function scan(parent)
+        for _, it in ipairs(parent:GetChildren()) do
+            if (it:IsA("IntValue") or it:IsA("NumberValue")) and it.Value > 0 then
+                t[#t+1] = it.Name .. ": " .. fmt(it.Value)
+            elseif it:IsA("Folder") then
+                scan(it) -- Search inside sub-folders
+            end
+        end
+    end
+    
+    scan(pinv)
+    return #t > 0 and table.concat(t, "\n") or "Empty"
+end
+
+-- ═══════════════════════════════════════════════════════════
+--  DISCORD (NON-BLOCKING DEDICATED THREAD)
+-- ═══════════════════════════════════════════════════════════
 local function updateDiscord()
     if not linkedMsg then return end
-    local now = tick()
-    if now - lastDiscord < CONFIG.UPDATE_INTERVAL * 60 then return end
-    lastDiscord = now
     
     task.spawn(function()
-        local pinv = player:FindFirstChild("inventory")
-        local invStr = "Empty"
-        if pinv then
-            local t = {}
-            for _, it in ipairs(pinv:GetChildren()) do
-                if it:IsA("ValueBase") then t[#t+1] = it.Name .. ": " .. fmt(it.Value) end
-            end
-            invStr = #t > 0 and table.concat(t, "\n") or "Empty"
-        end
+        local invStr = getInvData()
         
         local pstats = player:FindFirstChild("playerstats")
         local stored = pstats and pstats:FindFirstChild("Stored")
@@ -157,8 +173,15 @@ local function updateDiscord()
     end)
 end
 
+-- Dedicated thread for Discord updates (No more Heartbeat spam)
+task.spawn(function()
+    while task.wait(CONFIG.UPDATE_INTERVAL * 60) do
+        if loop then updateDiscord() end
+    end
+end)
+
 -- ═══════════════════════════════════════════════════════════
---  MINIMAL GUI (stripped to max performance)
+--  MINIMAL GUI (FIXED LAYOUT & INV DISPLAY)
 -- ═══════════════════════════════════════════════════════════
 local C3 = Color3.fromRGB
 local C = {
@@ -172,8 +195,8 @@ gui.Name, gui.ResetOnSpawn = "CFG", false
 gui.Parent = pgui
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0,240,0,420)
-main.Position = UDim2.new(0.5,-120,0.5,-210)
+main.Size = UDim2.new(0,240,0,480) -- Taller to fit inventory
+main.Position = UDim2.new(0.5,-120,0.5,-240)
 main.BackgroundColor3 = C.bg
 main.BorderSizePixel = 0
 main.Parent = gui
@@ -214,7 +237,7 @@ content.Position = UDim2.new(0,6,0,39)
 content.BackgroundTransparency = 1
 content.Parent = main
 
--- Case selector
+-- Case selector (ZIndex fixed so it drops OVER other elements)
 local caseFrame = Instance.new("TextButton")
 caseFrame.Size = UDim2.new(1,0,0,30)
 caseFrame.BackgroundColor3 = C.card
@@ -223,17 +246,19 @@ caseFrame.TextColor3 = C.white
 caseFrame.TextSize = 11
 caseFrame.Font = Enum.Font.GothamBold
 caseFrame.TextXAlignment = Enum.TextXAlignment.Left
+caseFrame.ZIndex = 10
 caseFrame.Parent = content
 Instance.new("UICorner", caseFrame).CornerRadius = UDim.new(0,6)
 local casePad = Instance.new("UIPadding", caseFrame)
 casePad.PaddingLeft = UDim.new(0,10)
 
 local caseList = Instance.new("Frame")
-caseList.Size = UDim2.new(1,0,0,0)
+caseList.Size = UDim2.new(1,0,0,220) -- Fixed: 10 cases * 22px each
 caseList.BackgroundColor3 = C.card
 caseList.BorderSizePixel = 0
 caseList.Visible = false
 caseList.ClipsDescendants = true
+caseList.ZIndex = 10
 caseList.Parent = content
 Instance.new("UICorner", caseList).CornerRadius = UDim.new(0,6)
 
@@ -247,6 +272,7 @@ for i=1,10 do
     btn.TextColor3 = i==sel and C.amber or C.grey
     btn.TextSize = 10
     btn.Font = Enum.Font.Gotham
+    btn.ZIndex = 10
     btn.Parent = caseList
     btn.MouseButton1Click:Connect(function()
         sel = i
@@ -265,7 +291,6 @@ for i=1,10 do
         cachePrompt()
     end)
 end
-caseList.Size = UDim2.new(1,0,0,#caseList:GetChildren()*22)
 
 caseFrame.MouseButton1Click:Connect(function()
     caseList.Visible = not caseList.Visible
@@ -325,8 +350,42 @@ statUptime.Font = Enum.Font.Code
 statUptime.TextXAlignment = Enum.TextXAlignment.Left
 statUptime.Parent = statsFrame
 
+-- Inventory Display
+local invLabel = Instance.new("TextLabel")
+invLabel.Size = UDim2.new(1,0,0,20)
+invLabel.Position = UDim2.new(0,0,0,160)
+invLabel.BackgroundTransparency = 1
+invLabel.Text = "🎒 Inventory"
+invLabel.TextColor3 = C.white
+invLabel.TextSize = 11
+invLabel.Font = Enum.Font.GothamBold
+invLabel.TextXAlignment = Enum.TextXAlignment.Left
+invLabel.Parent = content
+local invPad = Instance.new("UIPadding", invLabel)
+invPad.PaddingLeft = UDim.new(0,8)
+
+local invScroll = Instance.new("ScrollingFrame")
+invScroll.Size = UDim2.new(1,0,0,200)
+invScroll.Position = UDim2.new(0,0,0,180)
+invScroll.BackgroundColor3 = C.card
+invScroll.BackgroundTransparency = 0.3
+invScroll.BorderSizePixel = 0
+invScroll.CanvasSize = UDim2.new(0,0,0,0)
+invScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+invScroll.ScrollBarImageColor3 = C.dim
+invScroll.Parent = content
+Instance.new("UICorner", invScroll).CornerRadius = UDim.new(0,6)
+
+local invLayout = Instance.new("UIListLayout", invScroll)
+invLayout.Padding = UDim.new(0,4)
+
+local invPad2 = Instance.new("UIPadding", invScroll)
+invPad2.PaddingTop = UDim.new(0,4)
+invPad2.PaddingLeft = UDim.new(0,6)
+invPad2.PaddingRight = UDim.new(0,6)
+
 -- ═══════════════════════════════════════════════════════════
---  STATS UPDATER (non-blocking, low frequency)
+--  STATS & INV UPDATER
 -- ═══════════════════════════════════════════════════════════
 task.spawn(function()
     while task.wait(1) do
@@ -340,11 +399,49 @@ task.spawn(function()
             local e = tick() - startT
             statUptime.Text = ("⏱ Uptime: %02d:%02d"):format(e/60, e%60)
         end
+        
+        -- Update Inventory GUI safely
+        for _, c in ipairs(invScroll:GetChildren()) do
+            if c:IsA("TextLabel") then c:Destroy() end
+        end
+        local pinv = player:FindFirstChild("inventory") or player:FindFirstChild("Inventory")
+        if pinv then
+            local hasItem = false
+            local function scanGUI(parent)
+                for _, it in ipairs(parent:GetChildren()) do
+                    if (it:IsA("IntValue") or it:IsA("NumberValue")) and it.Value > 0 then
+                        hasItem = true
+                        local lbl = Instance.new("TextLabel")
+                        lbl.Size = UDim2.new(1,0,0,16)
+                        lbl.BackgroundTransparency = 1
+                        lbl.Text = it.Name .. ": " .. fmt(it.Value)
+                        lbl.TextColor3 = C.grey
+                        lbl.TextSize = 10
+                        lbl.Font = Enum.Font.Code
+                        lbl.TextXAlignment = Enum.TextXAlignment.Left
+                        lbl.Parent = invScroll
+                    elseif it:IsA("Folder") then
+                        scanGUI(it)
+                    end
+                end
+            end
+            scanGUI(pinv)
+            if not hasItem then
+                local lbl = Instance.new("TextLabel")
+                lbl.Size = UDim2.new(1,0,0,16)
+                lbl.BackgroundTransparency = 1
+                lbl.Text = "Empty..."
+                lbl.TextColor3 = C.dim
+                lbl.TextSize = 10
+                lbl.Font = Enum.Font.Code
+                lbl.Parent = invScroll
+            end
+        end
     end
 end)
 
 -- ═══════════════════════════════════════════════════════════
---  FARMING LOGIC
+--  FARMING LOGIC (FIXED LOOP)
 -- ═══════════════════════════════════════════════════════════
 local function startFarming()
     if loop then return end
@@ -355,7 +452,13 @@ local function startFarming()
     farmBtn.TextColor3 = C3(255,200,180)
     farmBtn.BackgroundColor3 = C.dangerDark
     cachePrompt()
-    conn = RunService.Heartbeat:Connect(fire)
+    
+    task.spawn(function()
+        while loop do
+            fire()
+            task.wait(0.5) -- Safe firing rate to prevent server rejection/breaking the case prompt
+        end
+    end)
 end
 
 local function stopFarming()
@@ -364,17 +467,11 @@ local function stopFarming()
     farmBtn.Text = "▶ START"
     farmBtn.TextColor3 = C.amber
     farmBtn.BackgroundColor3 = C.amberDark
-    if conn then conn:Disconnect(); conn = nil end
     updateDiscord()
 end
 
 farmBtn.MouseButton1Click:Connect(function()
     if loop then stopFarming() else startFarming() end
-end)
-
--- Discord updater on heartbeat during farming
-RunService.Heartbeat:Connect(function()
-    if loop then updateDiscord() end
 end)
 
 -- Watch for late-loading cases
