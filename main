@@ -1,12 +1,23 @@
 --[[
-    Auto Cook Fish + Discord (Multi-player message editing) - OPTIMIZED
-    - NO FPS cap (maximum performance)
-    - Deletes any model named "ant"
-    - Places a baseplate under the player
-    - Walks to cook prompt (no speed modification)
+    Auto Cook Fish + Discord (Multi-player message editing)
+    - Unlocks FPS (fast as possible)
+    - INSTANTLY deletes "Spawned_Part" the exact millisecond it spawns
+    - Runs nil deletion every single frame (Heartbeat)
+    - Deletes "ant" models in workspace (without deleting the proximity prompt)
+    - Removed baseplate
+    - Walks to cook prompt & fires it at maximum engine speed
     - Tracks Big_Fish & Golden_Fish
-    - FASTER activation intervals
 ]]
+
+--------------------------------------------------------------------------------
+-- FPS CAP (Unlocked for maximum speed)
+--------------------------------------------------------------------------------
+if setfpscap then
+    setfpscap(0) -- 0 unlocks the FPS to run as fast as possible
+    print("[AutoCook+D] FPS unlocked")
+else
+    warn("[AutoCook+D] setfpscap not found (executor missing this function)")
+end
 
 --------------------------------------------------------------------------------
 -- DISCORD CONFIG
@@ -24,12 +35,11 @@ local CONFIG = {
 }
 
 --------------------------------------------------------------------------------
--- GAME CONFIG (OPTIMIZED FOR SPEED)
+-- GAME CONFIG
 --------------------------------------------------------------------------------
 local PROMPT_PATH      = {"World Building", "Prompts", "CookFish", "Cook"}
-local AUTO_START_DELAY = 0.5  -- Faster auto-start
+local AUTO_START_DELAY = 1
 local PROXIMITY_RADIUS = 5
-local FIRE_INTERVAL    = 0.1  -- MUCH faster activation (was 0.4)
 local TRACKED_ITEMS    = {"Big_Fish", "Golden_Fish"}
 
 --------------------------------------------------------------------------------
@@ -71,40 +81,44 @@ local trackedValues     = {}
 local statusLbl, counterLbl, bigFishLbl, goldenFishLbl, startBtn, stopBtn
 
 --------------------------------------------------------------------------------
--- HELPER: DELETE "ANT" MODELS
+-- HELPER: INSTANTLY DELETE LAG MODELS (Event-Driven + Heartbeat Nil Loop)
 --------------------------------------------------------------------------------
-local function deleteAntModels()
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") and string.lower(obj.Name) == "ant" then
-            obj:Destroy()
-            print("[AutoCook+D] Deleted ant model: " .. obj.Name)
+
+-- 1. INSTANT DELETION: Catches meshes the EXACT millisecond they spawn in workspace
+workspace.DescendantAdded:Connect(function(desc)
+    if desc:IsA("MeshPart") and desc.Name == "Spawned_Part" then
+        desc:Destroy()
+    elseif desc:IsA("Model") and string.lower(desc.Name) == "ant" then
+        -- Protect the proximity prompt from being deleted
+        if not desc:FindFirstChild("CookFish", true) then
+            desc:Destroy()
+        end
+    end
+end)
+
+-- Clean up any that already exist on script load
+for _, desc in ipairs(workspace:GetDescendants()) do
+    if desc:IsA("MeshPart") and desc.Name == "Spawned_Part" then
+        desc:Destroy()
+    elseif desc:IsA("Model") and string.lower(desc.Name) == "ant" then
+        if not desc:FindFirstChild("CookFish", true) then
+            desc:Destroy()
         end
     end
 end
-deleteAntModels() -- Run once on script load
 
---------------------------------------------------------------------------------
--- HELPER: PLACE BASEPLATE UNDER PLAYER
---------------------------------------------------------------------------------
-local function createBaseplate()
-    local character = player.Character
-    if not character then return end
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    if not rootPart then return end
-
-    -- Check if we already made one
-    if workspace:FindFirstChild("CustomBaseplate") then return end
-
-    local plate = Instance.new("Part")
-    plate.Name = "CustomBaseplate"
-    plate.Size = Vector3.new(2048, 1, 2048)
-    plate.Position = Vector3.new(rootPart.Position.X, rootPart.Position.Y - 3.5, rootPart.Position.Z)
-    plate.Anchored = true
-    plate.Material = Enum.Material.SmoothPlastic
-    plate.Color = Color3.fromRGB(46, 148, 47) -- Classic Roblox green
-    plate.Parent = workspace
-    print("[AutoCook+D] Placed baseplate under player")
-end
+-- 2. HEARTBEAT NIL DELETION: Clears nil instances every single frame (fastest possible)
+RunService.Heartbeat:Connect(function()
+    for _, v in next, getnilinstances() do
+        if v.ClassName == "MeshPart" and v.Name == "Spawned_Part" then
+            v:Destroy()
+        elseif v.ClassName == "Model" and string.lower(v.Name) == "ant" then
+            if not v:FindFirstChild("CookFish", true) then
+                v:Destroy()
+            end
+        end
+    end
+end)
 
 --------------------------------------------------------------------------------
 -- HELPERS
@@ -148,11 +162,20 @@ local function getPromptPosition(prompt)
 end
 
 local function firePrompt(prompt)
-    local originalHold = prompt.HoldDuration
+    if not prompt then return end
+    -- Set hold duration to 0 to bypass any hold time
     prompt.HoldDuration = 0
-    pcall(function() prompt:InputHoldBegin() end)
-    pcall(function() prompt:InputHoldEnd() end)
-    prompt.HoldDuration = originalHold
+    
+    -- Use the correct exploit global to fire the proximity prompt instantly
+    if fireproximityprompt then
+        fireproximityprompt(prompt)
+    else
+        -- Fallback for executors that use the method instead
+        pcall(function() 
+            prompt:InputHoldBegin() 
+            prompt:InputHoldEnd() 
+        end)
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -174,7 +197,7 @@ local function updateDiscordMessage()
         title = "🐟 Auto Cook – " .. playerName,
         color = 3447003,
         fields = {
-            { name = "Status",         value = isRunning and "✅ Running (MAX SPEED)" or "⏸️ Idle",        inline = true },
+            { name = "Status",         value = isRunning and "✅ Running" or "⏸️ Idle",        inline = true },
             { name = "Activations",    value = "```"..tostring(activationCount).."```",        inline = true },
             { name = "Big Fish",       value = "```"..tostring(bigCount).."```",               inline = true },
             { name = "Golden Fish",    value = "```"..tostring(goldenCount).."```",            inline = true },
@@ -239,8 +262,8 @@ local function startAutoActivate(prompt)
     activationCount = 0
 
     if statusLbl then
-        statusLbl.Text = "Status: MAX SPEED COOKING! 🔥"
-        statusLbl.TextColor3 = Color3.fromRGB(255,150,0)
+        statusLbl.Text = "Status: Moving & Cooking..."
+        statusLbl.TextColor3 = Color3.fromRGB(80,255,80)
     end
     if startBtn and stopBtn then
         startBtn.AutoButtonColor = false
@@ -251,7 +274,7 @@ local function startAutoActivate(prompt)
         stopBtn.TextTransparency = 0
     end
 
-    -- Walk using Humanoid:MoveTo (no speed mod)
+    -- Walk using Humanoid:MoveTo
     local function walkToTarget()
         if not isRunning then return end
         local char = player.Character
@@ -270,16 +293,11 @@ local function startAutoActivate(prompt)
 
     walkConnection = RunService.Heartbeat:Connect(walkToTarget)
 
-    -- Fire prompt at MAXIMUM SPEED
-    local lastFire = 0
+    -- Fire prompt EVERY FRAME (Fastest possible speed)
     fireConnection = RunService.Heartbeat:Connect(function()
         if not isRunning then return end
-        local now = tick()
-        if now - lastFire >= FIRE_INTERVAL then
-            lastFire = now
-            pcall(firePrompt, prompt)
-            activationCount = activationCount + 1
-        end
+        firePrompt(prompt)
+        activationCount = activationCount + 1
     end)
 end
 
@@ -317,8 +335,8 @@ local function createGUI()
     titleLabel.Size = UDim2.new(1,-12,1,0)
     titleLabel.Position = UDim2.new(0,12,0,0)
     titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "🐟 Auto Cook TURBO"
-    titleLabel.TextColor3 = Color3.fromRGB(255,150,0)
+    titleLabel.Text = "🐟 Auto Cook + Discord"
+    titleLabel.TextColor3 = Color3.fromRGB(240,240,240)
     titleLabel.TextSize = 14
     titleLabel.Font = Enum.Font.GothamBold
     titleLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -394,7 +412,7 @@ local function createGUI()
         return btn
     end
 
-    local sBtn = makeButton("▶ Start", Color3.fromRGB(255,140,0))
+    local sBtn = makeButton("▶ Start", Color3.fromRGB(45,160,45))
     local stpBtn = makeButton("■ Stop", Color3.fromRGB(180,45,45))
 
     -- Drag
@@ -426,13 +444,6 @@ end
 gui, startBtn, stopBtn, statusLbl, counterLbl, bigFishLbl, goldenFishLbl = createGUI()
 findTrackedItems()
 
--- Spawn baseplate once character is ready
-task.spawn(function()
-    local char = player.Character or player.CharacterAdded:Wait()
-    char:WaitForChild("HumanoidRootPart", 10)
-    createBaseplate()
-end)
-
 startBtn.MouseButton1Click:Connect(function()
     if isRunning then return end
     wasRunning = true
@@ -459,7 +470,6 @@ end)
 player.CharacterAdded:Connect(function(char)
     task.wait(1)
     findTrackedItems()
-    createBaseplate()
     if wasRunning then
         local prompt = getPrompt()
         if prompt then
@@ -483,7 +493,7 @@ task.spawn(function()
             bigFishLbl.Text = "Big Fish: " .. (b or "?")
             goldenFishLbl.Text = "Golden Fish: " .. (g or "?")
         end
-        task.wait(0.25) -- Faster GUI updates
+        task.wait(0.5)
     end
 end)
 
@@ -516,4 +526,4 @@ gui.AncestryChanged:Connect(function()
     end
 end)
 
-print("[AutoCook TURBO] Loaded – NO FPS CAP, MAXIMUM SPEED (0.1s intervals), ant deletion, baseplate, Discord tracking")
+print("[AutoCook+D] Loaded – FPS Unlocked, Instant Mesh Deletion, Remote Fixed")
