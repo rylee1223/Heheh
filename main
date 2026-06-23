@@ -230,7 +230,7 @@ screenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
 screenGui.Parent          = playerGui
 
 -- ── Main Frame ───────────────────────────────────────────────
-local W, H = 260, 500 -- Increased height for Time stat
+local W, H = 260, 500 
 local mainFrame = Instance.new("Frame")
 mainFrame.Size              = UDim2.new(0, W, 0, H)
 mainFrame.Position          = UDim2.new(0.5, -W/2, 0.5, -H/2)
@@ -383,38 +383,54 @@ dropBtn.MouseButton1Click:Connect(function()
     dropList.Visible = dropdownOpen
 end)
 
--- ── Farm Button ──────────────────────────────────────────────
-local farmBtn = Instance.new("TextButton")
+-- ── Farm Button Logic ────────────────────────────────────────
+local farmBtn = Instance.new("Frame") -- Placeholder, actual button below
 farmBtn.Size                = UDim2.new(1, 0, 0, 36)
 farmBtn.BackgroundColor3    = C.accent
-farmBtn.Text                = "Start Farming"
-farmBtn.TextColor3          = Color3.new(1,1,1)
-farmBtn.TextSize            = 14
-farmBtn.Font                = Enum.Font.GothamBold
 farmBtn.LayoutOrder         = 3
 farmBtn.Parent              = content
 corner(farmBtn, 6)
 
-farmBtn.MouseButton1Click:Connect(function()
-    isLooping = not isLooping
+local farmBtnInner = Instance.new("TextButton")
+farmBtnInner.Size           = UDim2.new(1, 0, 1, 0)
+farmBtnInner.BackgroundTransparency = 1
+farmBtnInner.Text           = "Start Farming"
+farmBtnInner.TextColor3     = Color3.new(1,1,1)
+farmBtnInner.TextSize       = 14
+farmBtnInner.Font           = Enum.Font.GothamBold
+farmBtnInner.Parent         = farmBtn
+
+local function startFarming()
+    if isLooping then return end
+    isLooping = true
+    farmBtnInner.Text = "Stop Farming"
+    farmBtn.BackgroundColor3 = C.danger
+    startTime = tick()
+    casesOpened = 0
+    lastUpdateTime = 0
+    
+    loopThread = task.spawn(function()
+        while isLooping do
+            local prompt = getPrompt(selectedCase)
+            firePrompt(prompt)
+            task.wait(0.5)
+        end
+    end)
+end
+
+local function stopFarming()
+    if not isLooping then return end
+    isLooping = false
+    farmBtnInner.Text = "Start Farming"
+    farmBtn.BackgroundColor3 = C.accent
+    if loopThread then task.cancel(loopThread) end
+end
+
+farmBtnInner.MouseButton1Click:Connect(function()
     if isLooping then
-        farmBtn.Text = "Stop Farming"
-        farmBtn.BackgroundColor3 = C.danger
-        startTime = tick()
-        casesOpened = 0
-        lastUpdateTime = 0
-        
-        loopThread = task.spawn(function()
-            while isLooping do
-                local prompt = getPrompt(selectedCase)
-                firePrompt(prompt)
-                task.wait(0.5)
-            end
-        end)
+        stopFarming()
     else
-        farmBtn.Text = "Start Farming"
-        farmBtn.BackgroundColor3 = C.accent
-        if loopThread then task.cancel(loopThread) end
+        startFarming()
     end
 end)
 
@@ -475,7 +491,6 @@ task.spawn(function()
         timeValueLabel.Text = "N/A"
     end
 end)
-
 
 -- ── Inventory Section ────────────────────────────────────────
 local sep = Instance.new("Frame")
@@ -577,7 +592,7 @@ local function refreshInventory()
             amountLabel.Size = UDim2.new(0.35, 0, 1, 0)
             amountLabel.Position = UDim2.new(0.65, 0, 0, 0)
             amountLabel.BackgroundTransparency = 1
-            amountLabel.Text = formatNumber(item.Value) -- Apply formatting here too
+            amountLabel.Text = formatNumber(item.Value)
             amountLabel.TextColor3 = C.accent
             amountLabel.TextSize = 12
             amountLabel.Font = Enum.Font.GothamBold
@@ -637,3 +652,6 @@ UserInputService.InputChanged:Connect(function(input)
         mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
     end
 end)
+
+-- ── AUTO START ───────────────────────────────────────────────
+task.delay(1, startFarming)
