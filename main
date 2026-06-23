@@ -1,21 +1,12 @@
 --[[
-    Auto Cook Fish + Discord (Multi-player message editing)
-    - Caps FPS to 12
+    Auto Cook Fish + Discord (Multi-player message editing) - OPTIMIZED
+    - NO FPS cap (maximum performance)
     - Deletes any model named "ant"
     - Places a baseplate under the player
     - Walks to cook prompt (no speed modification)
     - Tracks Big_Fish & Golden_Fish
+    - FASTER activation intervals
 ]]
-
---------------------------------------------------------------------------------
--- FPS CAP
---------------------------------------------------------------------------------
-if setfpscap then
-    setfpscap(12)
-    print("[AutoCook+D] FPS capped to 12")
-else
-    warn("[AutoCook+D] setfpscap not found (executor missing this function)")
-end
 
 --------------------------------------------------------------------------------
 -- DISCORD CONFIG
@@ -33,12 +24,12 @@ local CONFIG = {
 }
 
 --------------------------------------------------------------------------------
--- GAME CONFIG
+-- GAME CONFIG (OPTIMIZED FOR SPEED)
 --------------------------------------------------------------------------------
 local PROMPT_PATH      = {"World Building", "Prompts", "CookFish", "Cook"}
-local AUTO_START_DELAY = 1
+local AUTO_START_DELAY = 0.5  -- Faster auto-start
 local PROXIMITY_RADIUS = 5
-local FIRE_INTERVAL    = 0.4
+local FIRE_INTERVAL    = 0.1  -- MUCH faster activation (was 0.4)
 local TRACKED_ITEMS    = {"Big_Fish", "Golden_Fish"}
 
 --------------------------------------------------------------------------------
@@ -183,7 +174,7 @@ local function updateDiscordMessage()
         title = "🐟 Auto Cook – " .. playerName,
         color = 3447003,
         fields = {
-            { name = "Status",         value = isRunning and "✅ Running" or "⏸️ Idle",        inline = true },
+            { name = "Status",         value = isRunning and "✅ Running (MAX SPEED)" or "⏸️ Idle",        inline = true },
             { name = "Activations",    value = "```"..tostring(activationCount).."```",        inline = true },
             { name = "Big Fish",       value = "```"..tostring(bigCount).."```",               inline = true },
             { name = "Golden Fish",    value = "```"..tostring(goldenCount).."```",            inline = true },
@@ -248,8 +239,8 @@ local function startAutoActivate(prompt)
     activationCount = 0
 
     if statusLbl then
-        statusLbl.Text = "Status: Moving & Cooking..."
-        statusLbl.TextColor3 = Color3.fromRGB(80,255,80)
+        statusLbl.Text = "Status: MAX SPEED COOKING! 🔥"
+        statusLbl.TextColor3 = Color3.fromRGB(255,150,0)
     end
     if startBtn and stopBtn then
         startBtn.AutoButtonColor = false
@@ -279,7 +270,7 @@ local function startAutoActivate(prompt)
 
     walkConnection = RunService.Heartbeat:Connect(walkToTarget)
 
-    -- Fire prompt at interval
+    -- Fire prompt at MAXIMUM SPEED
     local lastFire = 0
     fireConnection = RunService.Heartbeat:Connect(function()
         if not isRunning then return end
@@ -326,8 +317,8 @@ local function createGUI()
     titleLabel.Size = UDim2.new(1,-12,1,0)
     titleLabel.Position = UDim2.new(0,12,0,0)
     titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "🐟 Auto Cook + Discord"
-    titleLabel.TextColor3 = Color3.fromRGB(240,240,240)
+    titleLabel.Text = "🐟 Auto Cook TURBO"
+    titleLabel.TextColor3 = Color3.fromRGB(255,150,0)
     titleLabel.TextSize = 14
     titleLabel.Font = Enum.Font.GothamBold
     titleLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -371,7 +362,7 @@ local function createGUI()
     gLbl.Position = UDim2.new(0,6,0,100)
     gLbl.BackgroundTransparency = 1
     gLbl.Text = "Golden Fish: ?"
-    gLbl.TextColor3 = Color3.fromRGB(255,215,0) -- Gold color for Golden Fish
+    gLbl.TextColor3 = Color3.fromRGB(255,215,0)
     gLbl.TextSize = 11
     gLbl.Font = Enum.Font.Gotham
     gLbl.TextXAlignment = Enum.TextXAlignment.Left
@@ -403,7 +394,7 @@ local function createGUI()
         return btn
     end
 
-    local sBtn = makeButton("▶ Start", Color3.fromRGB(45,160,45))
+    local sBtn = makeButton("▶ Start", Color3.fromRGB(255,140,0))
     local stpBtn = makeButton("■ Stop", Color3.fromRGB(180,45,45))
 
     -- Drag
@@ -468,7 +459,7 @@ end)
 player.CharacterAdded:Connect(function(char)
     task.wait(1)
     findTrackedItems()
-    createBaseplate() -- Recreate baseplate on respawn
+    createBaseplate()
     if wasRunning then
         local prompt = getPrompt()
         if prompt then
@@ -492,7 +483,7 @@ task.spawn(function()
             bigFishLbl.Text = "Big Fish: " .. (b or "?")
             goldenFishLbl.Text = "Golden Fish: " .. (g or "?")
         end
-        task.wait(0.5)
+        task.wait(0.25) -- Faster GUI updates
     end
 end)
 
@@ -525,4 +516,4 @@ gui.AncestryChanged:Connect(function()
     end
 end)
 
-print("[AutoCook+D] Loaded – 12 FPS cap, ant models deleted, baseplate placed, walking, tracking Big & Golden fish, Discord editing")
+print("[AutoCook TURBO] Loaded – NO FPS CAP, MAXIMUM SPEED (0.1s intervals), ant deletion, baseplate, Discord tracking")
