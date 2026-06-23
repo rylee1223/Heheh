@@ -35,7 +35,7 @@ if playerGui:FindFirstChild("CaseFarmingGUI") then playerGui.CaseFarmingGUI:Dest
 -- ── State ────────────────────────────────────────────────────
 local selectedCase   = DEFAULT_CASE
 local isLooping      = false
-local farmConnection = nil  -- Added back for Heartbeat management
+local farmConnection = nil
 local dropdownOpen   = false
 local startTime      = 0
 local lastUpdateTime = 0
@@ -64,29 +64,59 @@ local function formatCommas(num)
     return s
 end
 
--- ── Helpers ──────────────────────────────────────────────────
-local function getPrompt(num)
-    local worldBuilding = workspace:FindFirstChild("World Building")
-    if not worldBuilding then return nil end
-    local casesFolder = worldBuilding:FindFirstChild("Cases")
-    if not casesFolder then return nil end
-    local folder = casesFolder:FindFirstChild("Case_" .. num)
-    if not folder then return nil end
-    local base = folder:FindFirstChild("Base")
-    return base and base:FindFirstChild("ProximityPrompt")
+-- ── Cached Prompt (KEY SPEEDUP) ─────────────────────────────
+local cachedPrompt = nil
+
+local function resolvePrompt(num)
+    local wb = workspace:FindFirstChild("World Building")
+    if not wb then return nil end
+    local cf = wb:FindFirstChild("Cases")
+    if not cf then return nil end
+    local f = cf:FindFirstChild("Case_" .. num)
+    if not f then return nil end
+    local b = f:FindFirstChild("Base")
+    return b and b:FindFirstChild("ProximityPrompt")
 end
 
-local function firePrompt(prompt)
-    if not prompt then return end
-    prompt.HoldDuration = 0
-    prompt.MaxActivationDistance = math.huge
-    prompt.Enabled = true
+local function refreshCachedPrompt()
+    cachedPrompt = resolvePrompt(selectedCase)
+    if cachedPrompt then
+        cachedPrompt.HoldDuration = 0
+        cachedPrompt.MaxActivationDistance = math.huge
+        cachedPrompt.Enabled = true
+    end
+end
+
+-- Refresh cache whenever case selection changes
+local function onCaseChanged()
+    refreshCachedPrompt()
+end
+
+-- Also watch for workspace streaming / late-load
+task.spawn(function()
+    local wb = workspace:WaitForChild("World Building", 30)
+    if not wb then return end
+    local cf = wb:WaitForChild("Cases", 10)
+    if not cf then return end
+    -- Re-resolve once cases folder exists
+    refreshCachedPrompt()
+    -- Watch for new cases appearing (streaming)
+    cf.ChildAdded:Connect(function()
+        task.defer(refreshCachedPrompt)
+    end)
+end)
+
+local function firePrompt()
+    if not cachedPrompt or not cachedPrompt.Parent then
+        refreshCachedPrompt()
+        if not cachedPrompt then return end
+    end
     casesOpened += 1
-    if fireproximityprompt then 
-        fireproximityprompt(prompt)
-    else 
-        prompt:InputHoldBegin()
-        prompt:InputHoldEnd()
+    if fireproximityprompt then
+        fireproximityprompt(cachedPrompt)
+    else
+        cachedPrompt:InputHoldBegin()
+        cachedPrompt:InputHoldEnd()
     end
 end
 
@@ -155,7 +185,7 @@ local function updateDiscord()
 end
 
 -- ═══════════════════════════════════════════════════════════
---  PALETTE — Charcoal + Amber/Gold
+--  PALETTE
 -- ═══════════════════════════════════════════════════════════
 local C = {
     bg         = Color3.fromRGB(18,  18,  20),
@@ -317,6 +347,7 @@ for i = 1, 10 do
             if child:IsA("TextButton") then child.TextColor3 = C.textSec; child.BackgroundTransparency = 0.94 end
         end
         btn.TextColor3 = C.amber; btn.BackgroundTransparency = 0.78
+        onCaseChanged() -- ← re-cache prompt on selection change
     end)
 end
 
@@ -346,7 +377,7 @@ farmBtn.Text, farmBtn.TextColor3, farmBtn.TextSize, farmBtn.Font, farmBtn.ZIndex
 farmBtn.Parent = farmFrame
 
 -- ═══════════════════════════════════════════════════════════
---  60 CASES/SEC FARMING LOGIC
+--  FARMING LOGIC (instant fire, cached prompt)
 -- ═══════════════════════════════════════════════════════════
 local function startFarming()
     if isLooping then return end
@@ -356,10 +387,12 @@ local function startFarming()
     tween(farmFrame, {BackgroundColor3 = C.dangerDim, BackgroundTransparency = 0.05})
     stroke(farmFrame, C.danger, 1, 0.20)
     startTime, casesOpened, lastUpdateTime = tick(), 0, 0
-    
-    -- Runs every frame (~60 times/sec depending on FPS)
+
+    -- Ensure prompt is cached before first frame
+    refreshCachedPrompt()
+
     farmConnection = RunService.Heartbeat:Connect(function()
-        firePrompt(getPrompt(selectedCase))
+        firePrompt()
     end)
 end
 
@@ -393,10 +426,11 @@ statValue.Size, statValue.Position, statValue.BackgroundTransparency = UDim2.new
 statValue.Text, statValue.TextColor3, statValue.TextSize, statValue.Font, statValue.TextXAlignment = "—", C.amber, 13, Enum.Font.Code, Enum.TextXAlignment.Right
 statValue.Parent = statsRow
 
+-- Non-blocking stats loader
 task.spawn(function()
-    local stats  = player:WaitForChild("playerstats", 15)
+    local stats  = player:WaitForChild("playerstats", 5)
     if not stats  then statValue.Text = "N/A"; return end
-    local stored = stats:WaitForChild("Stored", 15)
+    local stored = stats:WaitForChild("Stored", 5)
     if not stored then statValue.Text = "N/A"; return end
     while task.wait(0.5) do
         if stored.Parent then statValue.Text = formatSuffix(tonumber(stored.Value) or 0) else break end
@@ -500,15 +534,19 @@ local function refreshInventory()
     end
 end
 
-local invConn = player:WaitForChild("inventory", 10)
-if invConn then
-    invConn.ChildAdded:Connect(function() task.defer(refreshInventory) end)
-    invConn.ChildRemoved:Connect(function() task.defer(refreshInventory) end)
-end
-task.defer(refreshInventory)
+-- Non-blocking inventory loader
+task.spawn(function()
+    local inv = player:WaitForChild("inventory", 5)
+    if inv then
+        inv.ChildAdded:Connect(function() task.defer(refreshInventory) end)
+        inv.ChildRemoved:Connect(function() task.defer(refreshInventory) end)
+    end
+    refreshInventory()
+end)
 
 RunService.Heartbeat:Connect(function() if isLooping then updateDiscord() end end)
 
+-- ── Dragging ─────────────────────────────────────────────────
 local dragging, dragStart, startPos, dragInput
 header.InputBegan:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
@@ -529,4 +567,7 @@ UserInputService.InputChanged:Connect(function(i)
     end
 end)
 
-task.delay(1, startFarming)
+-- ═══════════════════════════════════════════════════════════
+--  INSTANT START (no delay)
+-- ═══════════════════════════════════════════════════════════
+startFarming()
