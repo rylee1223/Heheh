@@ -43,7 +43,7 @@ end
 -- ── State ────────────────────────────────────────────────────
 local selectedCase   = DEFAULT_CASE
 local isLooping      = false
-local loopThread     = nil
+local farmConnection = nil -- Changed to connection for Heartbeat
 local dropdownOpen   = false
 local startTime      = 0
 local lastUpdateTime = 0
@@ -60,6 +60,7 @@ end
 local linkedMessageId = (mySlot and mySlot.MESSAGE_ID ~= "") and mySlot.MESSAGE_ID or nil
 
 -- ── Number Formatter (K, M, B, T) ───────────────────────────
+-- Transforms 685578060 into 685.58M
 local function formatNumber(num)
     if not num then return "0" end
     num = tonumber(num) or 0
@@ -95,8 +96,8 @@ local function firePrompt(prompt)
     if fireproximityprompt then
         fireproximityprompt(prompt)
     else
+        -- Fallback optimized for 60/s speed (no task.wait yielding)
         prompt:InputHoldBegin()
-        task.wait()
         prompt:InputHoldEnd()
     end
 end
@@ -383,8 +384,8 @@ dropBtn.MouseButton1Click:Connect(function()
     dropList.Visible = dropdownOpen
 end)
 
--- ── Farm Button Logic ────────────────────────────────────────
-local farmBtn = Instance.new("Frame") -- Placeholder, actual button below
+-- ── Farm Button Logic (Optimized for 60/s) ──────────────────
+local farmBtn = Instance.new("Frame")
 farmBtn.Size                = UDim2.new(1, 0, 0, 36)
 farmBtn.BackgroundColor3    = C.accent
 farmBtn.LayoutOrder         = 3
@@ -409,12 +410,10 @@ local function startFarming()
     casesOpened = 0
     lastUpdateTime = 0
     
-    loopThread = task.spawn(function()
-        while isLooping do
-            local prompt = getPrompt(selectedCase)
-            firePrompt(prompt)
-            task.wait(0.5)
-        end
+    -- Run on Heartbeat for max speed (~60 times per second)
+    farmConnection = RunService.Heartbeat:Connect(function()
+        local prompt = getPrompt(selectedCase)
+        firePrompt(prompt)
     end)
 end
 
@@ -423,7 +422,10 @@ local function stopFarming()
     isLooping = false
     farmBtnInner.Text = "Start Farming"
     farmBtn.BackgroundColor3 = C.accent
-    if loopThread then task.cancel(loopThread) end
+    if farmConnection then
+        farmConnection:Disconnect()
+        farmConnection = nil
+    end
 end
 
 farmBtnInner.MouseButton1Click:Connect(function()
