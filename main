@@ -1,13 +1,29 @@
 --[[
-    Auto Cook Frozen Fish + Discord (multi‑player message editing)
-    Uses the same CONFIG pattern as the case farmer.
-    Fill in your bot token, channel ID, and the player slots.
+    Auto Cook Frozen Fish + Discord (Multi-player message editing)
+    - Caps FPS to 12
+    - Deletes any model named "ant"
+    - Places a baseplate under the player
+    - Walks to cook prompt (no speed modification)
+    - Tracks Frozen_Fish & Diamond_Fish
 ]]
 
+--------------------------------------------------------------------------------
+-- FPS CAP
+--------------------------------------------------------------------------------
+if setfpscap then
+    setfpscap(12)
+    print("[AutoCook+D] FPS capped to 12")
+else
+    warn("[AutoCook+D] setfpscap not found (executor missing this function)")
+end
+
+--------------------------------------------------------------------------------
+-- DISCORD CONFIG
+--------------------------------------------------------------------------------
 local CONFIG = {
     BOT_TOKEN = "GITHUB_PLACEHOLDER",   -- Replace with your real token
     CHANNEL_ID = "1517885492258013184",
-    UPDATE_INTERVAL = 5,                 -- minutes between Discord updates
+    UPDATE_INTERVAL = 1,                 -- minutes between Discord updates
     PLAYERS = {
         {USERNAME = "Build3r_MAGIC2012",      MESSAGE_ID = "1518758643166875681"},
         {USERNAME = "odtgPixelTiger",          MESSAGE_ID = "1518758669922336828"},
@@ -62,6 +78,42 @@ local trackedValues     = {}
 
 -- GUI references
 local statusLbl, counterLbl, frozenFishLbl, diamondFishLbl, startBtn, stopBtn
+
+--------------------------------------------------------------------------------
+-- HELPER: DELETE "ANT" MODELS
+--------------------------------------------------------------------------------
+local function deleteAntModels()
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and string.lower(obj.Name) == "ant" then
+            obj:Destroy()
+            print("[AutoCook+D] Deleted ant model: " .. obj.Name)
+        end
+    end
+end
+deleteAntModels() -- Run once on script load
+
+--------------------------------------------------------------------------------
+-- HELPER: PLACE BASEPLATE UNDER PLAYER
+--------------------------------------------------------------------------------
+local function createBaseplate()
+    local character = player.Character
+    if not character then return end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+
+    -- Check if we already made one
+    if workspace:FindFirstChild("CustomBaseplate") then return end
+
+    local plate = Instance.new("Part")
+    plate.Name = "CustomBaseplate"
+    plate.Size = Vector3.new(2048, 1, 2048)
+    plate.Position = Vector3.new(rootPart.Position.X, rootPart.Position.Y - 3.5, rootPart.Position.Z)
+    plate.Anchored = true
+    plate.Material = Enum.Material.SmoothPlastic
+    plate.Color = Color3.fromRGB(46, 148, 47) -- Classic Roblox green
+    plate.Parent = workspace
+    print("[AutoCook+D] Placed baseplate under player")
+end
 
 --------------------------------------------------------------------------------
 -- HELPERS
@@ -129,7 +181,7 @@ local function updateDiscordMessage()
 
     local embed = {
         title = "🐟 Auto Cook – " .. playerName,
-        color = 3447003,  -- blue
+        color = 3447003,
         fields = {
             { name = "Status",         value = isRunning and "✅ Running" or "⏸️ Idle",        inline = true },
             { name = "Activations",    value = "```"..tostring(activationCount).."```",        inline = true },
@@ -383,6 +435,13 @@ end
 gui, startBtn, stopBtn, statusLbl, counterLbl, frozenFishLbl, diamondFishLbl = createGUI()
 findTrackedItems()
 
+-- Spawn baseplate once character is ready
+task.spawn(function()
+    local char = player.Character or player.CharacterAdded:Wait()
+    char:WaitForChild("HumanoidRootPart", 10)
+    createBaseplate()
+end)
+
 startBtn.MouseButton1Click:Connect(function()
     if isRunning then return end
     wasRunning = true
@@ -406,9 +465,10 @@ player.CharacterRemoving:Connect(function()
     if statusLbl then statusLbl.Text = "Status: Respawning..." end
 end)
 
-player.CharacterAdded:Connect(function()
+player.CharacterAdded:Connect(function(char)
     task.wait(1)
     findTrackedItems()
+    createBaseplate() -- Recreate baseplate on respawn
     if wasRunning then
         local prompt = getPrompt()
         if prompt then
@@ -465,4 +525,4 @@ gui.AncestryChanged:Connect(function()
     end
 end)
 
-print("[AutoCook+D] Loaded – walking, tracking Frozen & Diamond, editing Discord per player slot")
+print("[AutoCook+D] Loaded – 12 FPS cap, ant models deleted, baseplate placed, walking, tracking fish, Discord editing")
