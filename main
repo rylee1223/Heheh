@@ -68,12 +68,20 @@ local eventCurrencyStat = player
     :WaitForChild("EventCurrency")
 
 local function getStatValue()
-    return tonumber(eventCurrencyStat.Value) or 0
+    -- BUG 6 FIX: guard against nil/unloaded stat
+    return (eventCurrencyStat and tonumber(eventCurrencyStat.Value)) or 0
 end
 
 --// RATE CALCULATOR
 local function logCollection(currentVal)
     local now = tick()
+
+    -- BUG 2 FIX: if value jumped backward (e.g. after stop/restart), wipe stale log
+    if currentVal < lastKnownValue then
+        collectLog     = {}
+        lastKnownValue = currentVal
+    end
+
     if currentVal > lastKnownValue then
         table.insert(collectLog, {t = now, v = currentVal - lastKnownValue})
         lastKnownValue = currentVal
@@ -178,7 +186,8 @@ local function buildEmbed(collected, rate, elapsed, currentTotal)
                 {name = "📡 Status",    value = "```" .. (enabled and "Farming" or "Idle") .. "```", inline = true},
             },
             footer    = {text = "Slot " .. slotIndex .. " of 4  •  Last updated"},
-            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+            -- BUG 8 FIX: use DateTime.now() for reliable UTC ISO timestamp
+            timestamp = DateTime.now():ToIsoDate(),
             thumbnail = {
                 url = "https://www.roblox.com/headshot-thumbnail/image?userId="
                     .. player.UserId .. "&width=420&height=420&format=png"
@@ -605,16 +614,22 @@ local espBtn   = makeBtn(main, "◈   ESP: OFF",        412, Color3.fromRGB(90, 
 local resetBtn = makeBtn(main, "↺   FORCE RESET",     456, Color3.fromRGB(60,  60,  80))
 
 --// BEAM
-local beam, att0
+-- BUG 4 FIX: att1 is a single reusable attachment on Terrain for the beam target
+local beam, att0, att1
 local function setupBeam()
     local char = player.Character or player.CharacterAdded:Wait()
     local hrp  = char:WaitForChild("HumanoidRootPart", 10)
     if not hrp then return end
     if att0 and att0.Parent then att0:Destroy() end
     if beam and beam.Parent then beam:Destroy() end
+    -- BUG 4 FIX: also clean up the shared target attachment
+    if att1 and att1.Parent then att1:Destroy() end
+    att1 = Instance.new("Attachment", workspace.Terrain)
+
     att0 = Instance.new("Attachment", hrp)
     beam = Instance.new("Beam", hrp)
     beam.Attachment0 = att0
+    beam.Attachment1 = att1
     beam.Width0, beam.Width1 = 0.07, 0.07
     beam.FaceCamera    = true
     beam.Enabled       = false
@@ -632,7 +647,14 @@ local function setupBeam()
     })
 end
 setupBeam()
-player.CharacterAdded:Connect(function() task.wait(0.5) setupBeam() end)
+
+-- BUG 1 FIX: reset stuck-detection state on respawn so we don't instantly self-kill
+player.CharacterAdded:Connect(function()
+    lastPos       = Vector3.zero
+    lastCheckTime = tick()
+    task.wait(0.5)
+    setupBeam()
+end)
 
 --// ESP
 local espTarget, espSphere, espBox, espBill, espThread = nil, nil, nil, nil, nil
@@ -757,10 +779,11 @@ RunService.Heartbeat:Connect(function()
     local now = tick()
     local closest, minDist = getClosest(hrp)
 
+    -- BUG 7 FIX: always call clearESP() when toggled off, not just when espTarget is set
     if espEnabled then
         if closest then applyESP(closest) else clearESP() end
     else
-        if espTarget then clearESP() end
+        clearESP()
     end
 
     if not enabled then return end
@@ -785,16 +808,13 @@ RunService.Heartbeat:Connect(function()
         hum:MoveTo(closest.Position + dir * CONFIG.OVERSHOOT)
         tryJump(hum, hrp, closest)
 
-        if beam then
-            local tAtt = closest:FindFirstChild("TargetAtt")
-            if not tAtt then
-                tAtt = Instance.new("Attachment", closest)
-                tAtt.Name = "TargetAtt"
-            end
-            beam.Attachment1 = tAtt
+        -- BUG 4 FIX: move att1 in world-space instead of creating attachments on gift parts
+        if beam and att1 and att1.Parent then
+            att1.WorldPosition = closest.Position
             beam.Enabled = true
         end
 
+        -- BUG 3 FIX: stuck detection only runs while actively chasing a target
         if now - lastCheckTime > CONFIG.STUCK_CHECK_INTERVAL then
             local moved = (hrp.Position - lastPos).Magnitude
             if moved < CONFIG.STUCK_THRESHOLD then
@@ -913,19 +933,23 @@ toggle.MouseButton1Click:Connect(function()
 end)
 
 --// DRAGGING
-local dragging, dragStart, dragPos
+-- BUG 5 FIX: track shadow's own start position separately to prevent drift
+local dragging, dragStart, dragPos, shadowDragPos
 main.InputBegan:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1 or
        i.UserInputType == Enum.UserInputType.Touch then
-        dragging = true; dragStart = i.Position; dragPos = main.Position
+        dragging      = true
+        dragStart     = i.Position
+        dragPos       = main.Position
+        shadowDragPos = shadow.Position
     end
 end)
 UserInputService.InputChanged:Connect(function(i)
     if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or
                      i.UserInputType == Enum.UserInputType.Touch) then
         local d = i.Position - dragStart
-        main.Position   = UDim2.new(dragPos.X.Scale, dragPos.X.Offset + d.X, dragPos.Y.Scale, dragPos.Y.Offset + d.Y)
-        shadow.Position = UDim2.new(dragPos.X.Scale, dragPos.X.Offset + d.X - 20, dragPos.Y.Scale, dragPos.Y.Offset + d.Y - 20)
+        main.Position   = UDim2.new(dragPos.X.Scale,       dragPos.X.Offset       + d.X, dragPos.Y.Scale,       dragPos.Y.Offset       + d.Y)
+        shadow.Position = UDim2.new(shadowDragPos.X.Scale, shadowDragPos.X.Offset + d.X, shadowDragPos.Y.Scale, shadowDragPos.Y.Offset + d.Y)
     end
 end)
 UserInputService.InputEnded:Connect(function(i)
