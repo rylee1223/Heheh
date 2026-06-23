@@ -3,7 +3,7 @@
 --// ========================================
 local CONFIG = {
     -- Bot token and channel (shared)
-    BOT_TOKEN  = "MTUxODc1MjkwNzc3MDU5MzI5MA.Gqk2v6.iLjYKUWM37Uc6VO4m8KM2iLvCUlCqm7cww0QNQ",
+    BOT_TOKEN  = "GITHUB_PLACEHOLDER", -- DO NOT PUT YOUR REAL TOKEN HERE!
     CHANNEL_ID = "1517885492258013184",
 
     -- How often to update messages (in minutes)
