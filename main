@@ -1,6 +1,6 @@
 -- ============================================================
 --  CASE FARMER GUI  —  Config
-local DEFAULT_CASE = 10   -- Which case to start on (1–10)
+local DEFAULT_CASE = 9   -- Which case to start on (1–10)
 -- ============================================================
 
 local CONFIG = {
