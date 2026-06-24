@@ -1,0 +1,529 @@
+--[[
+    Auto Cook Fish + Discord (Multi-player message editing)
+    - Unlocks FPS (fast as possible)
+    - INSTANTLY deletes "Spawned_Part" the exact millisecond it spawns
+    - Runs nil deletion every single frame (Heartbeat)
+    - Deletes "ant" models in workspace (without deleting the proximity prompt)
+    - Removed baseplate
+    - Walks to cook prompt & fires it at maximum engine speed
+    - Tracks Big_Fish & Golden_Fish
+]]
+
+--------------------------------------------------------------------------------
+-- FPS CAP (Unlocked for maximum speed)
+--------------------------------------------------------------------------------
+if setfpscap then
+    setfpscap(0) -- 0 unlocks the FPS to run as fast as possible
+    print("[AutoCook+D] FPS unlocked")
+else
+    warn("[AutoCook+D] setfpscap not found (executor missing this function)")
+end
+
+--------------------------------------------------------------------------------
+-- DISCORD CONFIG
+--------------------------------------------------------------------------------
+local CONFIG = {
+    BOT_TOKEN = "GITHUB_PLACEHOLDER",   -- Replace with your real token
+    CHANNEL_ID = "1517885492258013184",
+    UPDATE_INTERVAL = 5,                 -- minutes between Discord updates
+    PLAYERS = {
+        {USERNAME = "Build3r_MAGIC2012",      MESSAGE_ID = "1518758643166875681"},
+        {USERNAME = "odtgPixelTiger",          MESSAGE_ID = "1518758669922336828"},
+        {USERNAME = "qak_HazeMoonHD5705",     MESSAGE_ID = "1518758690235224208"},
+        {USERNAME = "dimdam457secholder",      MESSAGE_ID = "1518758703824633916"},
+    },
+}
+
+--------------------------------------------------------------------------------
+-- GAME CONFIG
+--------------------------------------------------------------------------------
+local PROMPT_PATH      = {"World Building", "Prompts", "CookFish", "Cook"}
+local AUTO_START_DELAY = 1
+local PROXIMITY_RADIUS = 5
+local TRACKED_ITEMS    = {"Big_Fish", "Golden_Fish"}
+
+--------------------------------------------------------------------------------
+-- SERVICES
+--------------------------------------------------------------------------------
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService      = game:GetService("HttpService")
+
+local player    = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local playerName = player.Name
+
+-- Find my slot in CONFIG
+local mySlot = nil
+for _, slot in pairs(CONFIG.PLAYERS) do
+    if string.lower(slot.USERNAME) == string.lower(playerName) then
+        mySlot = slot
+        break
+    end
+end
+local linkedMessageId = mySlot and mySlot.MESSAGE_ID or nil
+
+--------------------------------------------------------------------------------
+-- STATE
+--------------------------------------------------------------------------------
+local isRunning         = false
+local wasRunning        = false
+local activationCount   = 0
+local cachedPrompt      = nil
+local walkConnection    = nil
+local fireConnection    = nil
+local startTime         = 0
+local lastDiscordUpdate = 0
+local trackedValues     = {}
+
+-- GUI references
+local statusLbl, counterLbl, bigFishLbl, goldenFishLbl, startBtn, stopBtn
+
+--------------------------------------------------------------------------------
+-- HELPER: INSTANTLY DELETE LAG MODELS (Event-Driven + Heartbeat Nil Loop)
+--------------------------------------------------------------------------------
+
+-- 1. INSTANT DELETION: Catches meshes the EXACT millisecond they spawn in workspace
+workspace.DescendantAdded:Connect(function(desc)
+    if desc:IsA("MeshPart") and desc.Name == "Spawned_Part" then
+        desc:Destroy()
+    elseif desc:IsA("Model") and string.lower(desc.Name) == "ant" then
+        -- Protect the proximity prompt from being deleted
+        if not desc:FindFirstChild("CookFish", true) then
+            desc:Destroy()
+        end
+    end
+end)
+
+-- Clean up any that already exist on script load
+for _, desc in ipairs(workspace:GetDescendants()) do
+    if desc:IsA("MeshPart") and desc.Name == "Spawned_Part" then
+        desc:Destroy()
+    elseif desc:IsA("Model") and string.lower(desc.Name) == "ant" then
+        if not desc:FindFirstChild("CookFish", true) then
+            desc:Destroy()
+        end
+    end
+end
+
+-- 2. HEARTBEAT NIL DELETION: Clears nil instances every single frame (fastest possible)
+RunService.Heartbeat:Connect(function()
+    for _, v in next, getnilinstances() do
+        if v.ClassName == "MeshPart" and v.Name == "Spawned_Part" then
+            v:Destroy()
+        elseif v.ClassName == "Model" and string.lower(v.Name) == "ant" then
+            if not v:FindFirstChild("CookFish", true) then
+                v:Destroy()
+            end
+        end
+    end
+end)
+
+--------------------------------------------------------------------------------
+-- HELPERS
+--------------------------------------------------------------------------------
+local function findTrackedItems()
+    local inv = player:FindFirstChild("inventory")
+    if not inv then return end
+    for _, name in ipairs(TRACKED_ITEMS) do
+        local val = inv:FindFirstChild(name)
+        if val and val:IsA("IntValue") then
+            trackedValues[name] = val
+            val:GetPropertyChangedSignal("Value"):Connect(function()
+                if bigFishLbl and goldenFishLbl then
+                    bigFishLbl.Text = "Big Fish: " .. (trackedValues["Big_Fish"] and trackedValues["Big_Fish"].Value or "?")
+                    goldenFishLbl.Text = "Golden Fish: " .. (trackedValues["Golden_Fish"] and trackedValues["Golden_Fish"].Value or "?")
+                end
+            end)
+        end
+    end
+end
+
+local function getPrompt()
+    if cachedPrompt and cachedPrompt:IsDescendantOf(workspace) then return cachedPrompt end
+    cachedPrompt = nil
+    local current = workspace
+    for _, segment in ipairs(PROMPT_PATH) do
+        local child = current:FindFirstChild(segment)
+        if not child then return nil end
+        current = child
+    end
+    if not current:IsA("ProximityPrompt") then return nil end
+    cachedPrompt = current
+    return current
+end
+
+local function getPromptPosition(prompt)
+    local parent = prompt.Parent
+    if not parent then return nil end
+    local part = parent:IsA("BasePart") and parent or parent:FindFirstChildWhichIsA("BasePart", true)
+    return part and part.Position or nil
+end
+
+local function firePrompt(prompt)
+    if not prompt then return end
+    -- Set hold duration to 0 to bypass any hold time
+    prompt.HoldDuration = 0
+    
+    -- Use the correct exploit global to fire the proximity prompt instantly
+    if fireproximityprompt then
+        fireproximityprompt(prompt)
+    else
+        -- Fallback for executors that use the method instead
+        pcall(function() 
+            prompt:InputHoldBegin() 
+            prompt:InputHoldEnd() 
+        end)
+    end
+end
+
+--------------------------------------------------------------------------------
+-- DISCORD (using the case farmer's style)
+--------------------------------------------------------------------------------
+local function updateDiscordMessage()
+    if CONFIG.BOT_TOKEN == "" or CONFIG.BOT_TOKEN == "GITHUB_PLACEHOLDER" then return end
+    if not mySlot or not linkedMessageId then return end
+
+    local now = tick()
+    if now - lastDiscordUpdate < (CONFIG.UPDATE_INTERVAL * 60) then return end
+    lastDiscordUpdate = now
+
+    local bigCount = trackedValues["Big_Fish"] and trackedValues["Big_Fish"].Value or 0
+    local goldenCount = trackedValues["Golden_Fish"] and trackedValues["Golden_Fish"].Value or 0
+    local uptime = os.date("!%H:%M:%S", tick() - startTime)
+
+    local embed = {
+        title = "🐟 Auto Cook – " .. playerName,
+        color = 3447003,
+        fields = {
+            { name = "Status",         value = isRunning and "✅ Running" or "⏸️ Idle",        inline = true },
+            { name = "Activations",    value = "```"..tostring(activationCount).."```",        inline = true },
+            { name = "Big Fish",       value = "```"..tostring(bigCount).."```",               inline = true },
+            { name = "Golden Fish",    value = "```"..tostring(goldenCount).."```",            inline = true },
+            { name = "Uptime",         value = "```"..uptime.."```",                           inline = true },
+        },
+        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        footer = { text = "Slot " .. tostring(mySlot) .. " • Updates every " .. CONFIG.UPDATE_INTERVAL .. " min" },
+        thumbnail = { url = "https://www.roblox.com/headshot-thumbnail/image?userId="..player.UserId.."&width=420&height=420&format=png" }
+    }
+
+    local body = { content = " ", embeds = { embed } }
+    local req = (syn and syn.request) or (http and http.request) or http_request or request
+    if not req then return end
+
+    pcall(function()
+        req({
+            Url = "https://discord.com/api/v10/channels/" .. CONFIG.CHANNEL_ID .. "/messages/" .. linkedMessageId,
+            Method = "PATCH",
+            Headers = {
+                ["Authorization"] = "Bot " .. CONFIG.BOT_TOKEN,
+                ["Content-Type"] = "application/json"
+            },
+            Body = HttpService:JSONEncode(body)
+        })
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- START / STOP
+--------------------------------------------------------------------------------
+local function stopAutoActivate(updateGui)
+    isRunning = false
+    if walkConnection then walkConnection:Disconnect(); walkConnection = nil end
+    if fireConnection then fireConnection:Disconnect(); fireConnection = nil end
+    if updateGui ~= false and startBtn and stopBtn then
+        startBtn.AutoButtonColor = true
+        startBtn.BackgroundTransparency = 0
+        startBtn.TextTransparency = 0
+        stopBtn.AutoButtonColor = false
+        stopBtn.BackgroundTransparency = 0.45
+        stopBtn.TextTransparency = 0.4
+    end
+    if statusLbl then
+        statusLbl.Text = "Status: Idle"
+        statusLbl.TextColor3 = Color3.fromRGB(200,200,200)
+    end
+end
+
+local function startAutoActivate(prompt)
+    if isRunning then return end
+    local character = player.Character
+    if not character then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+    local promptPos = getPromptPosition(prompt)
+    if not promptPos then return end
+
+    isRunning = true
+    startTime = tick()
+    activationCount = 0
+
+    if statusLbl then
+        statusLbl.Text = "Status: Moving & Cooking..."
+        statusLbl.TextColor3 = Color3.fromRGB(80,255,80)
+    end
+    if startBtn and stopBtn then
+        startBtn.AutoButtonColor = false
+        startBtn.BackgroundTransparency = 0.45
+        startBtn.TextTransparency = 0.4
+        stopBtn.AutoButtonColor = true
+        stopBtn.BackgroundTransparency = 0
+        stopBtn.TextTransparency = 0
+    end
+
+    -- Walk using Humanoid:MoveTo
+    local function walkToTarget()
+        if not isRunning then return end
+        local char = player.Character
+        if not char then return end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+        local dist = (root.Position - promptPos).Magnitude
+        if dist > PROXIMITY_RADIUS then
+            hum:MoveTo(promptPos)
+        else
+            hum:MoveTo(root.Position) -- stop moving
+        end
+    end
+
+    walkConnection = RunService.Heartbeat:Connect(walkToTarget)
+
+    -- Fire prompt EVERY FRAME (Fastest possible speed)
+    fireConnection = RunService.Heartbeat:Connect(function()
+        if not isRunning then return end
+        firePrompt(prompt)
+        activationCount = activationCount + 1
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- GUI
+--------------------------------------------------------------------------------
+local function createGUI()
+    local old = playerGui:FindFirstChild("AutoCookFishGUI")
+    if old then old:Destroy() end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AutoCookFishGUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.Parent = playerGui
+
+    local main = Instance.new("Frame")
+    main.Size = UDim2.new(0, 280, 0, 210)
+    main.Position = UDim2.new(0.02, 0, 0.35, 0)
+    main.BackgroundColor3 = Color3.fromRGB(30,30,30)
+    main.BackgroundTransparency = 0.08
+    main.BorderSizePixel = 0
+    main.Parent = screenGui
+    Instance.new("UICorner", main).CornerRadius = UDim.new(0,10)
+    Instance.new("UIStroke", main).Color = Color3.fromRGB(80,80,80)
+
+    local titleBar = Instance.new("Frame")
+    titleBar.Size = UDim2.new(1,0,0,30)
+    titleBar.BackgroundColor3 = Color3.fromRGB(20,20,20)
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = main
+    Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0,10)
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1,-12,1,0)
+    titleLabel.Position = UDim2.new(0,12,0,0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = "🐟 Auto Cook + Discord"
+    titleLabel.TextColor3 = Color3.fromRGB(240,240,240)
+    titleLabel.TextSize = 14
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Parent = titleBar
+
+    local sLbl = Instance.new("TextLabel")
+    sLbl.Size = UDim2.new(1,-12,0,20)
+    sLbl.Position = UDim2.new(0,6,0,36)
+    sLbl.BackgroundTransparency = 1
+    sLbl.Text = "Status: Idle"
+    sLbl.TextColor3 = Color3.fromRGB(200,200,200)
+    sLbl.TextSize = 12
+    sLbl.Font = Enum.Font.GothamMedium
+    sLbl.TextXAlignment = Enum.TextXAlignment.Left
+    sLbl.Parent = main
+
+    local cLbl = Instance.new("TextLabel")
+    cLbl.Size = UDim2.new(1,-12,0,18)
+    cLbl.Position = UDim2.new(0,6,0,58)
+    cLbl.BackgroundTransparency = 1
+    cLbl.Text = "Activations: 0"
+    cLbl.TextColor3 = Color3.fromRGB(180,180,180)
+    cLbl.TextSize = 11
+    cLbl.Font = Enum.Font.Gotham
+    cLbl.TextXAlignment = Enum.TextXAlignment.Left
+    cLbl.Parent = main
+
+    local bLbl = Instance.new("TextLabel")
+    bLbl.Size = UDim2.new(1,-12,0,18)
+    bLbl.Position = UDim2.new(0,6,0,80)
+    bLbl.BackgroundTransparency = 1
+    bLbl.Text = "Big Fish: ?"
+    bLbl.TextColor3 = Color3.fromRGB(130,200,255)
+    bLbl.TextSize = 11
+    bLbl.Font = Enum.Font.Gotham
+    bLbl.TextXAlignment = Enum.TextXAlignment.Left
+    bLbl.Parent = main
+
+    local gLbl = Instance.new("TextLabel")
+    gLbl.Size = UDim2.new(1,-12,0,18)
+    gLbl.Position = UDim2.new(0,6,0,100)
+    gLbl.BackgroundTransparency = 1
+    gLbl.Text = "Golden Fish: ?"
+    gLbl.TextColor3 = Color3.fromRGB(255,215,0)
+    gLbl.TextSize = 11
+    gLbl.Font = Enum.Font.Gotham
+    gLbl.TextXAlignment = Enum.TextXAlignment.Left
+    gLbl.Parent = main
+
+    local buttonRow = Instance.new("Frame")
+    buttonRow.Size = UDim2.new(1,-12,0,34)
+    buttonRow.Position = UDim2.new(0,6,0,126)
+    buttonRow.BackgroundTransparency = 1
+    buttonRow.Parent = main
+
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Horizontal
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    layout.Padding = UDim.new(0,12)
+    layout.Parent = buttonRow
+
+    local function makeButton(text, color)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0,110,0,30)
+        btn.BackgroundColor3 = color
+        btn.TextColor3 = Color3.fromRGB(255,255,255)
+        btn.Text = text
+        btn.TextSize = 13
+        btn.Font = Enum.Font.GothamBold
+        btn.BorderSizePixel = 0
+        btn.Parent = buttonRow
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0,6)
+        return btn
+    end
+
+    local sBtn = makeButton("▶ Start", Color3.fromRGB(45,160,45))
+    local stpBtn = makeButton("■ Stop", Color3.fromRGB(180,45,45))
+
+    -- Drag
+    local dragging, dragStart, startPos
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = main.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - dragStart
+            main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+
+    return screenGui, sBtn, stpBtn, sLbl, cLbl, bLbl, gLbl
+end
+
+--------------------------------------------------------------------------------
+-- INIT
+--------------------------------------------------------------------------------
+gui, startBtn, stopBtn, statusLbl, counterLbl, bigFishLbl, goldenFishLbl = createGUI()
+findTrackedItems()
+
+startBtn.MouseButton1Click:Connect(function()
+    if isRunning then return end
+    wasRunning = true
+    local prompt = getPrompt()
+    if not prompt then
+        statusLbl.Text = "Status: Prompt not found!"
+        statusLbl.TextColor3 = Color3.fromRGB(255,80,80)
+        return
+    end
+    startAutoActivate(prompt)
+end)
+
+stopBtn.MouseButton1Click:Connect(function()
+    wasRunning = false
+    stopAutoActivate()
+    counterLbl.Text = "Activations: " .. tostring(activationCount)
+end)
+
+player.CharacterRemoving:Connect(function()
+    stopAutoActivate(false)
+    if statusLbl then statusLbl.Text = "Status: Respawning..." end
+end)
+
+player.CharacterAdded:Connect(function(char)
+    task.wait(1)
+    findTrackedItems()
+    if wasRunning then
+        local prompt = getPrompt()
+        if prompt then
+            startAutoActivate(prompt)
+        else
+            statusLbl.Text = "Status: Prompt not found!"
+            statusLbl.TextColor3 = Color3.fromRGB(255,80,80)
+            wasRunning = false
+        end
+    end
+end)
+
+task.spawn(function()
+    while gui and gui.Parent do
+        if isRunning then
+            counterLbl.Text = "Activations: " .. tostring(activationCount)
+        end
+        if bigFishLbl and goldenFishLbl then
+            local b = trackedValues["Big_Fish"] and trackedValues["Big_Fish"].Value
+            local g = trackedValues["Golden_Fish"] and trackedValues["Golden_Fish"].Value
+            bigFishLbl.Text = "Big Fish: " .. (b or "?")
+            goldenFishLbl.Text = "Golden Fish: " .. (g or "?")
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- Discord update loop
+if CONFIG.BOT_TOKEN ~= "" and CONFIG.BOT_TOKEN ~= "GITHUB_PLACEHOLDER" then
+    task.spawn(function()
+        while gui and gui.Parent do
+            if isRunning then updateDiscordMessage() end
+            task.wait(60)
+        end
+    end)
+end
+
+-- Auto start
+task.delay(AUTO_START_DELAY, function()
+    if isRunning then return end
+    local prompt = getPrompt()
+    if not prompt then
+        statusLbl.Text = "Status: Prompt not found!"
+        statusLbl.TextColor3 = Color3.fromRGB(255,80,80)
+        return
+    end
+    wasRunning = true
+    startAutoActivate(prompt)
+end)
+
+gui.AncestryChanged:Connect(function()
+    if not gui:IsDescendantOf(game) then
+        stopAutoActivate(false)
+    end
+end)
+
+print("[AutoCook+D] Loaded – FPS Unlocked, Instant Mesh Deletion, Remote Fixed")
