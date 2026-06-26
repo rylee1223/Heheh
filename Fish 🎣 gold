@@ -527,3 +527,26 @@ gui.AncestryChanged:Connect(function()
 end)
 
 print("[AutoCook+D] Loaded – FPS Unlocked, Instant Mesh Deletion, Remote Fixed")
+
+task.wait(10)
+local Players = game:GetService("Players")
+local VirtualUser = game:GetService("VirtualUser")
+local LocalPlayer = Players.LocalPlayer
+
+-- Send a notification so you know it's running
+pcall(function()
+    game.StarterGui:SetCore("SendNotification", {
+        Title = "Anti-AFK Active",
+        Text = "You will no longer be kicked for idling.",
+        Duration = 5
+    })
+end)
+
+print("[Universal Anti-AFK] Loaded successfully.")
+
+-- Catch the idle event and simulate input to reset the timer
+LocalPlayer.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+    print("[Universal Anti-AFK] Simulated input to prevent kick.")
+end)
