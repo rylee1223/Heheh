@@ -1,552 +1,513 @@
---[[
-    Auto Cook Fish + Discord (Multi-player message editing)
-    - Unlocks FPS (fast as possible)
-    - INSTANTLY deletes "Spawned_Part" the exact millisecond it spawns
-    - Runs nil deletion every single frame (Heartbeat)
-    - Deletes "ant" models in workspace (without deleting the proximity prompt)
-    - Removed baseplate
-    - Walks to cook prompt & fires it at maximum engine speed
-    - Tracks Big_Fish & Golden_Fish
-]]
-
---------------------------------------------------------------------------------
--- FPS CAP (Unlocked for maximum speed)
---------------------------------------------------------------------------------
-if setfpscap then
-    setfpscap(0) -- 0 unlocks the FPS to run as fast as possible
-    print("[AutoCook+D] FPS unlocked")
-else
-    warn("[AutoCook+D] setfpscap not found (executor missing this function)")
-end
-
---------------------------------------------------------------------------------
--- DISCORD CONFIG
---------------------------------------------------------------------------------
+--// ========================================
+--// CONFIGURATION — EDIT THESE VALUES
+--// ========================================
 local CONFIG = {
-    BOT_TOKEN = "GITHUB_PLACEHOLDER",   -- Replace with your real token
+    -- PASTE YOUR BRAND NEW RESET BOT TOKEN HERE (Go to Discord Developer Portal -> Bot -> Reset Token)
+    BOT_TOKEN  = "PASTE_YOUR_NEW_RESET_BOT_TOKEN_HERE",
     CHANNEL_ID = "1517885492258013184",
-    UPDATE_INTERVAL = 5,                 -- minutes between Discord updates
+
+    -- How often to update messages (in minutes)
+    UPDATE_INTERVAL = 1,
+
+    -- 4 Player slots — fill in EXACT Roblox USERNAME (Not DisplayName) + their message ID
+    -- Leave MESSAGE_ID as "" to disable Discord updates for that player
     PLAYERS = {
-        {USERNAME = "Build3r_MAGIC2012",      MESSAGE_ID = "1518758643166875681"},
-        {USERNAME = "odtgPixelTiger",          MESSAGE_ID = "1518758669922336828"},
-        {USERNAME = "qak_HazeMoonHD5705",     MESSAGE_ID = "1518758690235224208"},
-        {USERNAME = "dimdam457secholder",      MESSAGE_ID = "1518758703824633916"},
+        {USERNAME = "Build3r_MAGIC2012", MESSAGE_ID = "1518758643166875681"},
+        {USERNAME = "odtgPixelTiger", MESSAGE_ID = "1518758669922336828"},
+        {USERNAME = "qak_HazeMoonHD5705", MESSAGE_ID = "1518758690235224208"},
+        {USERNAME = "dimdam457secholder", MESSAGE_ID = "1518758703824633916"},
     },
+
+    -- Movement
+    OVERSHOOT = 1.5,
+    JUMP_DISTANCE = 3,
+    JUMP_COOLDOWN = 0.5,
+
+    -- Stuck detection
+    STUCK_THRESHOLD      = 0.7,
+    STUCK_KILL_THRESHOLD = 0.2,
+    STUCK_CHECK_INTERVAL = 1.4,
+
+    -- ESP
+    ESP_SPHERE_SCALE  = 0.85,
+    ESP_PULSE_SPEED   = 3.2,
+    ESP_PULSE_AMOUNT  = 0.32,
+
+    -- Anti-AFK
+    ANTI_AFK = true,
 }
 
---------------------------------------------------------------------------------
--- GAME CONFIG
---------------------------------------------------------------------------------
-local PROMPT_PATH      = {"World Building", "Prompts", "CookFish", "Cook"}
-local AUTO_START_DELAY = 1
-local PROXIMITY_RADIUS = 5
-local TRACKED_ITEMS    = {"Big_Fish", "Golden_Fish"}
-
---------------------------------------------------------------------------------
--- SERVICES
---------------------------------------------------------------------------------
-local Players          = game:GetService("Players")
-local RunService       = game:GetService("RunService")
+--// SERVICES
+local Players        = game:GetService("Players")
+local RunService     = game:GetService("RunService")
+local TweenService   = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local HttpService      = game:GetService("HttpService")
+local HttpService    = game:GetService("HttpService")
 
-local player    = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
-local playerName = player.Name
+--// VARIABLES
+local player     = Players.LocalPlayer
+local giftFolder = workspace:WaitForChild("CandyCanes")
 
--- Find my slot in CONFIG
+local enabled     = false
+local espEnabled  = false
+local currentTarget = nil
+
+local startVal       = 0
+local startTime      = 0
+local lastPos        = Vector3.zero
+local lastCheckTime  = tick()
+local jumpCooldown   = 0
+
+local collectLog     = {}
+local lastKnownValue = 0
+local lastUpdateTime = 0
+
+--// VALUE SOURCE
+local eventCurrencyStat = player
+    :WaitForChild("playerstats")
+    :WaitForChild("EventCurrency")
+
+local function getStatValue()
+    return tonumber(eventCurrencyStat.Value) or 0
+end
+
+--// RATE CALCULATOR
+local function logCollection(currentVal)
+    local now = tick()
+    if currentVal > lastKnownValue then
+        table.insert(collectLog, {t = now, v = currentVal - lastKnownValue})
+        lastKnownValue = currentVal
+    end
+    while collectLog[1] and (now - collectLog[1].t) > 60 do
+        table.remove(collectLog, 1)
+    end
+    if #collectLog == 0 then return 0 end
+    local total = 0
+    for _, e in pairs(collectLog) do total = total + e.v end
+    local window = math.min(now - collectLog[1].t, 60)
+    if window < 1 then return 0 end
+    return math.floor((total / window) * 60)
+end
+
+--// ANTI-AFK
+if CONFIG.ANTI_AFK then
+    local vu = game:GetService("VirtualUser")
+    player.Idled:Connect(function()
+        vu:CaptureController()
+        vu:ClickButton2(Vector2.new())
+    end)
+end
+
+--// ================================================
+--// MULTI-PLAYER DISCORD BOT SYSTEM
+--// ================================================
+
 local mySlot = nil
 for _, slot in pairs(CONFIG.PLAYERS) do
-    if string.lower(slot.USERNAME) == string.lower(playerName) then
+    if string.lower(slot.USERNAME) == string.lower(player.Name) then
         mySlot = slot
         break
     end
 end
-local linkedMessageId = mySlot and mySlot.MESSAGE_ID or nil
 
---------------------------------------------------------------------------------
--- STATE
---------------------------------------------------------------------------------
-local isRunning         = false
-local wasRunning        = false
-local activationCount   = 0
-local cachedPrompt      = nil
-local walkConnection    = nil
-local fireConnection    = nil
-local startTime         = 0
-local lastDiscordUpdate = 0
-local trackedValues     = {}
+local linkedMessageId = (mySlot and mySlot.MESSAGE_ID ~= "") and mySlot.MESSAGE_ID or nil
 
--- GUI references
-local statusLbl, counterLbl, bigFishLbl, goldenFishLbl, startBtn, stopBtn
+local function discordRequest(method, endpoint, body)
+    if CONFIG.BOT_TOKEN == "" or CONFIG.CHANNEL_ID == "" then return nil, "Missing Token/Channel" end
+    local req = (syn and syn.request)
+             or (http and http.request)
+             or http_request
+             or request
+    if not req then return nil, "Executor missing HTTP function" end
 
---------------------------------------------------------------------------------
--- HELPER: INSTANTLY DELETE LAG MODELS (Event-Driven + Heartbeat Nil Loop)
---------------------------------------------------------------------------------
-
--- 1. INSTANT DELETION: Catches meshes the EXACT millisecond they spawn in workspace
-workspace.DescendantAdded:Connect(function(desc)
-    if desc:IsA("MeshPart") and desc.Name == "Spawned_Part" then
-        desc:Destroy()
-    elseif desc:IsA("Model") and string.lower(desc.Name) == "ant" then
-        -- Protect the proximity prompt from being deleted
-        if not desc:FindFirstChild("CookFish", true) then
-            desc:Destroy()
-        end
-    end
-end)
-
--- Clean up any that already exist on script load
-for _, desc in ipairs(workspace:GetDescendants()) do
-    if desc:IsA("MeshPart") and desc.Name == "Spawned_Part" then
-        desc:Destroy()
-    elseif desc:IsA("Model") and string.lower(desc.Name) == "ant" then
-        if not desc:FindFirstChild("CookFish", true) then
-            desc:Destroy()
-        end
-    end
-end
-
--- 2. HEARTBEAT NIL DELETION: Clears nil instances every single frame (fastest possible)
-RunService.Heartbeat:Connect(function()
-    for _, v in next, getnilinstances() do
-        if v.ClassName == "MeshPart" and v.Name == "Spawned_Part" then
-            v:Destroy()
-        elseif v.ClassName == "Model" and string.lower(v.Name) == "ant" then
-            if not v:FindFirstChild("CookFish", true) then
-                v:Destroy()
-            end
-        end
-    end
-end)
-
---------------------------------------------------------------------------------
--- HELPERS
---------------------------------------------------------------------------------
-local function findTrackedItems()
-    local inv = player:FindFirstChild("inventory")
-    if not inv then return end
-    for _, name in ipairs(TRACKED_ITEMS) do
-        local val = inv:FindFirstChild(name)
-        if val and val:IsA("IntValue") then
-            trackedValues[name] = val
-            val:GetPropertyChangedSignal("Value"):Connect(function()
-                if bigFishLbl and goldenFishLbl then
-                    bigFishLbl.Text = "Big Fish: " .. (trackedValues["Big_Fish"] and trackedValues["Big_Fish"].Value or "?")
-                    goldenFishLbl.Text = "Golden Fish: " .. (trackedValues["Golden_Fish"] and trackedValues["Golden_Fish"].Value or "?")
-                end
-            end)
-        end
-    end
-end
-
-local function getPrompt()
-    if cachedPrompt and cachedPrompt:IsDescendantOf(workspace) then return cachedPrompt end
-    cachedPrompt = nil
-    local current = workspace
-    for _, segment in ipairs(PROMPT_PATH) do
-        local child = current:FindFirstChild(segment)
-        if not child then return nil end
-        current = child
-    end
-    if not current:IsA("ProximityPrompt") then return nil end
-    cachedPrompt = current
-    return current
-end
-
-local function getPromptPosition(prompt)
-    local parent = prompt.Parent
-    if not parent then return nil end
-    local part = parent:IsA("BasePart") and parent or parent:FindFirstChildWhichIsA("BasePart", true)
-    return part and part.Position or nil
-end
-
-local function firePrompt(prompt)
-    if not prompt then return end
-    -- Set hold duration to 0 to bypass any hold time
-    prompt.HoldDuration = 0
-    
-    -- Use the correct exploit global to fire the proximity prompt instantly
-    if fireproximityprompt then
-        fireproximityprompt(prompt)
-    else
-        -- Fallback for executors that use the method instead
-        pcall(function() 
-            prompt:InputHoldBegin() 
-            prompt:InputHoldEnd() 
-        end)
-    end
-end
-
---------------------------------------------------------------------------------
--- DISCORD (using the case farmer's style)
---------------------------------------------------------------------------------
-local function updateDiscordMessage()
-    if CONFIG.BOT_TOKEN == "" or CONFIG.BOT_TOKEN == "GITHUB_PLACEHOLDER" then return end
-    if not mySlot or not linkedMessageId then return end
-
-    local now = tick()
-    if now - lastDiscordUpdate < (CONFIG.UPDATE_INTERVAL * 60) then return end
-    lastDiscordUpdate = now
-
-    local bigCount = trackedValues["Big_Fish"] and trackedValues["Big_Fish"].Value or 0
-    local goldenCount = trackedValues["Golden_Fish"] and trackedValues["Golden_Fish"].Value or 0
-    local uptime = os.date("!%H:%M:%S", tick() - startTime)
-
-    local embed = {
-        title = "🐟 Auto Cook – " .. playerName,
-        color = 3447003,
-        fields = {
-            { name = "Status",         value = isRunning and "✅ Running" or "⏸️ Idle",        inline = true },
-            { name = "Activations",    value = "```"..tostring(activationCount).."```",        inline = true },
-            { name = "Big Fish",       value = "```"..tostring(bigCount).."```",               inline = true },
-            { name = "Golden Fish",    value = "```"..tostring(goldenCount).."```",            inline = true },
-            { name = "Uptime",         value = "```"..uptime.."```",                           inline = true },
-        },
-        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        footer = { text = "Slot " .. tostring(mySlot) .. " • Updates every " .. CONFIG.UPDATE_INTERVAL .. " min" },
-        thumbnail = { url = "https://www.roblox.com/headshot-thumbnail/image?userId="..player.UserId.."&width=420&height=420&format=png" }
-    }
-
-    local body = { content = " ", embeds = { embed } }
-    local req = (syn and syn.request) or (http and http.request) or http_request or request
-    if not req then return end
-
-    pcall(function()
-        req({
-            Url = "https://discord.com/api/v10/channels/" .. CONFIG.CHANNEL_ID .. "/messages/" .. linkedMessageId,
-            Method = "PATCH",
+    local success, response = pcall(function()
+        return req({
+            Url    = "https://discord.com/api/v10" .. endpoint,
+            Method = method,
             Headers = {
                 ["Authorization"] = "Bot " .. CONFIG.BOT_TOKEN,
-                ["Content-Type"] = "application/json"
+                ["Content-Type"]  = "application/json",
             },
-            Body = HttpService:JSONEncode(body)
+            Body = body and HttpService:JSONEncode(body) or nil,
         })
     end)
-end
 
---------------------------------------------------------------------------------
--- START / STOP
---------------------------------------------------------------------------------
-local function stopAutoActivate(updateGui)
-    isRunning = false
-    if walkConnection then walkConnection:Disconnect(); walkConnection = nil end
-    if fireConnection then fireConnection:Disconnect(); fireConnection = nil end
-    if updateGui ~= false and startBtn and stopBtn then
-        startBtn.AutoButtonColor = true
-        startBtn.BackgroundTransparency = 0
-        startBtn.TextTransparency = 0
-        stopBtn.AutoButtonColor = false
-        stopBtn.BackgroundTransparency = 0.45
-        stopBtn.TextTransparency = 0.4
-    end
-    if statusLbl then
-        statusLbl.Text = "Status: Idle"
-        statusLbl.TextColor3 = Color3.fromRGB(200,200,200)
-    end
-end
-
-local function startAutoActivate(prompt)
-    if isRunning then return end
-    local character = player.Character
-    if not character then return end
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if not humanoid then return end
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    if not rootPart then return end
-    local promptPos = getPromptPosition(prompt)
-    if not promptPos then return end
-
-    isRunning = true
-    startTime = tick()
-    activationCount = 0
-
-    if statusLbl then
-        statusLbl.Text = "Status: Moving & Cooking..."
-        statusLbl.TextColor3 = Color3.fromRGB(80,255,80)
-    end
-    if startBtn and stopBtn then
-        startBtn.AutoButtonColor = false
-        startBtn.BackgroundTransparency = 0.45
-        startBtn.TextTransparency = 0.4
-        stopBtn.AutoButtonColor = true
-        stopBtn.BackgroundTransparency = 0
-        stopBtn.TextTransparency = 0
+    if not success then
+        warn("[GiftFarmer] HTTP Request crashed: " .. tostring(response))
+        return nil, "Request crashed"
     end
 
-    -- Walk using Humanoid:MoveTo
-    local function walkToTarget()
-        if not isRunning then return end
-        local char = player.Character
-        if not char then return end
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if not hum then return end
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if not root then return end
-        local dist = (root.Position - promptPos).Magnitude
-        if dist > PROXIMITY_RADIUS then
-            hum:MoveTo(promptPos)
+    if response and response.StatusCode then
+        if response.StatusCode >= 200 and response.StatusCode < 300 then
+            if response.Body and response.Body ~= "" then
+                return HttpService:JSONDecode(response.Body), nil
+            end
+            return true, nil
         else
-            hum:MoveTo(root.Position) -- stop moving
+            local errBody = response.Body or "No body"
+            warn("[GiftFarmer] Discord API Error " .. tostring(response.StatusCode) .. ": " .. errBody)
+            return nil, "API Error " .. tostring(response.StatusCode)
         end
     end
 
-    walkConnection = RunService.Heartbeat:Connect(walkToTarget)
-
-    -- Fire prompt EVERY FRAME (Fastest possible speed)
-    fireConnection = RunService.Heartbeat:Connect(function()
-        if not isRunning then return end
-        firePrompt(prompt)
-        activationCount = activationCount + 1
-    end)
+    return nil, "No response"
 end
 
---------------------------------------------------------------------------------
--- GUI
---------------------------------------------------------------------------------
-local function createGUI()
-    local old = playerGui:FindFirstChild("AutoCookFishGUI")
-    if old then old:Destroy() end
-
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "AutoCookFishGUI"
-    screenGui.ResetOnSpawn = false
-    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    screenGui.Parent = playerGui
-
-    local main = Instance.new("Frame")
-    main.Size = UDim2.new(0, 280, 0, 210)
-    main.Position = UDim2.new(0.02, 0, 0.35, 0)
-    main.BackgroundColor3 = Color3.fromRGB(30,30,30)
-    main.BackgroundTransparency = 0.08
-    main.BorderSizePixel = 0
-    main.Parent = screenGui
-    Instance.new("UICorner", main).CornerRadius = UDim.new(0,10)
-    Instance.new("UIStroke", main).Color = Color3.fromRGB(80,80,80)
-
-    local titleBar = Instance.new("Frame")
-    titleBar.Size = UDim2.new(1,0,0,30)
-    titleBar.BackgroundColor3 = Color3.fromRGB(20,20,20)
-    titleBar.BorderSizePixel = 0
-    titleBar.Parent = main
-    Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0,10)
-
-    local titleLabel = Instance.new("TextLabel")
-    titleLabel.Size = UDim2.new(1,-12,1,0)
-    titleLabel.Position = UDim2.new(0,12,0,0)
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "🐟 Auto Cook + Discord"
-    titleLabel.TextColor3 = Color3.fromRGB(240,240,240)
-    titleLabel.TextSize = 14
-    titleLabel.Font = Enum.Font.GothamBold
-    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-    titleLabel.Parent = titleBar
-
-    local sLbl = Instance.new("TextLabel")
-    sLbl.Size = UDim2.new(1,-12,0,20)
-    sLbl.Position = UDim2.new(0,6,0,36)
-    sLbl.BackgroundTransparency = 1
-    sLbl.Text = "Status: Idle"
-    sLbl.TextColor3 = Color3.fromRGB(200,200,200)
-    sLbl.TextSize = 12
-    sLbl.Font = Enum.Font.GothamMedium
-    sLbl.TextXAlignment = Enum.TextXAlignment.Left
-    sLbl.Parent = main
-
-    local cLbl = Instance.new("TextLabel")
-    cLbl.Size = UDim2.new(1,-12,0,18)
-    cLbl.Position = UDim2.new(0,6,0,58)
-    cLbl.BackgroundTransparency = 1
-    cLbl.Text = "Activations: 0"
-    cLbl.TextColor3 = Color3.fromRGB(180,180,180)
-    cLbl.TextSize = 11
-    cLbl.Font = Enum.Font.Gotham
-    cLbl.TextXAlignment = Enum.TextXAlignment.Left
-    cLbl.Parent = main
-
-    local bLbl = Instance.new("TextLabel")
-    bLbl.Size = UDim2.new(1,-12,0,18)
-    bLbl.Position = UDim2.new(0,6,0,80)
-    bLbl.BackgroundTransparency = 1
-    bLbl.Text = "Big Fish: ?"
-    bLbl.TextColor3 = Color3.fromRGB(130,200,255)
-    bLbl.TextSize = 11
-    bLbl.Font = Enum.Font.Gotham
-    bLbl.TextXAlignment = Enum.TextXAlignment.Left
-    bLbl.Parent = main
-
-    local gLbl = Instance.new("TextLabel")
-    gLbl.Size = UDim2.new(1,-12,0,18)
-    gLbl.Position = UDim2.new(0,6,0,100)
-    gLbl.BackgroundTransparency = 1
-    gLbl.Text = "Golden Fish: ?"
-    gLbl.TextColor3 = Color3.fromRGB(255,215,0)
-    gLbl.TextSize = 11
-    gLbl.Font = Enum.Font.Gotham
-    gLbl.TextXAlignment = Enum.TextXAlignment.Left
-    gLbl.Parent = main
-
-    local buttonRow = Instance.new("Frame")
-    buttonRow.Size = UDim2.new(1,-12,0,34)
-    buttonRow.Position = UDim2.new(0,6,0,126)
-    buttonRow.BackgroundTransparency = 1
-    buttonRow.Parent = main
-
-    local layout = Instance.new("UIListLayout")
-    layout.FillDirection = Enum.FillDirection.Horizontal
-    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    layout.Padding = UDim.new(0,12)
-    layout.Parent = buttonRow
-
-    local function makeButton(text, color)
-        local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(0,110,0,30)
-        btn.BackgroundColor3 = color
-        btn.TextColor3 = Color3.fromRGB(255,255,255)
-        btn.Text = text
-        btn.TextSize = 13
-        btn.Font = Enum.Font.GothamBold
-        btn.BorderSizePixel = 0
-        btn.Parent = buttonRow
-        Instance.new("UICorner", btn).CornerRadius = UDim.new(0,6)
-        return btn
+local function buildEmbed(collected, rate, elapsed, currentTotal)
+    local uptimeStr = string.format("%02d:%02d", math.floor(elapsed/60), math.floor(elapsed%60))
+    local slotIndex = "?"
+    if mySlot then
+        for i, s in pairs(CONFIG.PLAYERS) do
+            if s == mySlot then slotIndex = tostring(i) break end
+        end
     end
 
-    local sBtn = makeButton("▶ Start", Color3.fromRGB(45,160,45))
-    local stpBtn = makeButton("■ Stop", Color3.fromRGB(180,45,45))
-
-    -- Drag
-    local dragging, dragStart, startPos
-    titleBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = main.Position
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then dragging = false end
-            end)
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if not dragging then return end
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            local delta = input.Position - dragStart
-            main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-        end
-    end)
-
-    return screenGui, sBtn, stpBtn, sLbl, cLbl, bLbl, gLbl
+    return {
+        content = " ",
+        embeds = {{
+            title  = "🎁  Gift Farmer — Player " .. slotIndex .. " Live",
+            color  = 14680064,
+            fields = {
+                {name = "👤 Player",    value = "```" .. player.Name  .. "```", inline = true},
+                {name = "📦 Collected", value = "```" .. tostring(collected)   .. "```", inline = true},
+                {name = "💰 Total",     value = "```" .. tostring(currentTotal) .. "```", inline = true},
+                {name = "⚡ Rate",      value = "```" .. tostring(rate) .. " / min```",  inline = true},
+                {name = "⏱ Uptime",    value = "```" .. uptimeStr .. "```",              inline = true},
+                {name = "📡 Status",    value = "```" .. (enabled and "Farming" or "Idle") .. "```", inline = true},
+            },
+            footer    = {text = "Slot " .. slotIndex .. " of 4  •  Last updated"},
+            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+            thumbnail = {
+                url = "https://www.roblox.com/headshot-thumbnail/image?userId=".. player.UserId .. "&width=420&height=420&format=png"
+            },
+        }}
+    }
 end
 
---------------------------------------------------------------------------------
--- INIT
---------------------------------------------------------------------------------
-gui, startBtn, stopBtn, statusLbl, counterLbl, bigFishLbl, goldenFishLbl = createGUI()
-findTrackedItems()
+local function updateDiscord(collected, rate, elapsed)
+    if CONFIG.BOT_TOKEN == "" or CONFIG.CHANNEL_ID == "" then return end
+    if not mySlot then return end
+    if not linkedMessageId then return end
 
-startBtn.MouseButton1Click:Connect(function()
-    if isRunning then return end
-    wasRunning = true
-    local prompt = getPrompt()
-    if not prompt then
-        statusLbl.Text = "Status: Prompt not found!"
-        statusLbl.TextColor3 = Color3.fromRGB(255,80,80)
-        return
-    end
-    startAutoActivate(prompt)
-end)
+    local now = tick()
+    if now - lastUpdateTime < (CONFIG.UPDATE_INTERVAL * 60) then return end
+    lastUpdateTime = now
 
-stopBtn.MouseButton1Click:Connect(function()
-    wasRunning = false
-    stopAutoActivate()
-    counterLbl.Text = "Activations: " .. tostring(activationCount)
-end)
+    local currentTotal = getStatValue()
+    local embedData    = buildEmbed(collected, rate, elapsed, currentTotal)
 
-player.CharacterRemoving:Connect(function()
-    stopAutoActivate(false)
-    if statusLbl then statusLbl.Text = "Status: Respawning..." end
-end)
-
-player.CharacterAdded:Connect(function(char)
-    task.wait(1)
-    findTrackedItems()
-    if wasRunning then
-        local prompt = getPrompt()
-        if prompt then
-            startAutoActivate(prompt)
+    task.spawn(function()
+        local result, err = discordRequest("PATCH", "/channels/" .. CONFIG.CHANNEL_ID .. "/messages/" .. linkedMessageId, embedData)
+        if err then
+            warn("[GiftFarmer] Failed to edit message " .. linkedMessageId .. ". Error: " .. tostring(err))
         else
-            statusLbl.Text = "Status: Prompt not found!"
-            statusLbl.TextColor3 = Color3.fromRGB(255,80,80)
-            wasRunning = false
+            print("[GiftFarmer] Successfully edited message " .. linkedMessageId)
         end
-    end
-end)
+    end)
+end
+
+--// GUI (Full UI code - unchanged from working version)
+local gui = Instance.new("ScreenGui")
+gui.Name = "GiftFarmer"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = player.PlayerGui
+
+local main = Instance.new("Frame", gui)
+main.Size = UDim2.new(0, 320, 0, 490)
+main.Position = UDim2.new(0.5, -160, 0.5, -245)
+main.BackgroundColor3 = Color3.fromRGB(8, 6, 14)
+main.Visible = false
+main.ClipsDescendants = true
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 20)
+
+local shadow = Instance.new("ImageLabel", gui)
+shadow.Size = UDim2.new(0, 360, 0, 530)
+shadow.Position = UDim2.new(0.5, -180, 0.5, -265)
+shadow.BackgroundTransparency = 1
+shadow.Image = "rbxassetid://6015897843"
+shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+shadow.ImageTransparency = 0.5
+shadow.ScaleType = Enum.ScaleType.Slice
+shadow.SliceCenter = Rect.new(49, 49, 450, 450)
+shadow.ZIndex = 0
+shadow.Visible = false
+
+local mainStroke = Instance.new("UIStroke", main)
+mainStroke.Thickness = 1.5
+mainStroke.Color = Color3.fromRGB(200, 30, 60)
+mainStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 
 task.spawn(function()
-    while gui and gui.Parent do
-        if isRunning then
-            counterLbl.Text = "Activations: " .. tostring(activationCount)
-        end
-        if bigFishLbl and goldenFishLbl then
-            local b = trackedValues["Big_Fish"] and trackedValues["Big_Fish"].Value
-            local g = trackedValues["Golden_Fish"] and trackedValues["Golden_Fish"].Value
-            bigFishLbl.Text = "Big Fish: " .. (b or "?")
-            goldenFishLbl.Text = "Golden Fish: " .. (g or "?")
-        end
-        task.wait(0.5)
+    local t = 0
+    while task.wait(0.03) do
+        if not main.Visible then continue end
+        t = t + 0.03
+        local p = (math.sin(t * 2.5) + 1) / 2
+        mainStroke.Color = Color3.fromRGB(math.floor(160 + p * 95), math.floor(15 + p * 25), math.floor(40 + p * 50))
     end
 end)
 
--- Discord update loop
-if CONFIG.BOT_TOKEN ~= "" and CONFIG.BOT_TOKEN ~= "GITHUB_PLACEHOLDER" then
-    task.spawn(function()
-        while gui and gui.Parent do
-            if isRunning then updateDiscordMessage() end
-            task.wait(60)
+Instance.new("UIGradient", main).Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(14, 8, 20)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(10, 6, 16)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(7, 4, 12))
+})
+
+-- Header
+local header = Instance.new("Frame", main)
+header.Size = UDim2.new(1, 0, 0, 72)
+header.BackgroundColor3 = Color3.fromRGB(140, 12, 35)
+header.BorderSizePixel = 0
+header.ZIndex = 3
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 20)
+
+local hPatch = Instance.new("Frame", header)
+hPatch.Size = UDim2.new(1, 0, 0.5, 0)
+hPatch.Position = UDim2.new(0, 0, 0.5, 0)
+hPatch.BackgroundColor3 = Color3.fromRGB(140, 12, 35)
+hPatch.BorderSizePixel = 0
+hPatch.ZIndex = 3
+
+Instance.new("UIGradient", header).Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(240, 45, 80)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(190, 20, 55)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(120, 8, 30))
+})
+
+local shine = Instance.new("Frame", header)
+shine.Size = UDim2.new(0.25, 0, 1, 0)
+shine.Position = UDim2.new(-0.3, 0, 0, 0)
+shine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+shine.BackgroundTransparency = 0.9
+shine.BorderSizePixel = 0
+shine.ZIndex = 4
+
+task.spawn(function()
+    while true do
+        task.wait(5)
+        if main.Visible then
+            shine.Position = UDim2.new(-0.3, 0, 0, 0)
+            TweenService:Create(shine, TweenInfo.new(0.6, Enum.EasingStyle.Quad), {
+                Position = UDim2.new(1.1, 0, 0, 0)
+            }):Play()
         end
+    end
+end)
+
+local iconBg = Instance.new("Frame", header)
+iconBg.Size = UDim2.new(0, 46, 0, 46)
+iconBg.Position = UDim2.new(0, 13, 0.5, -23)
+iconBg.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+iconBg.BackgroundTransparency = 0.85
+iconBg.ZIndex = 5
+Instance.new("UICorner", iconBg).CornerRadius = UDim.new(1, 0)
+
+local iconLbl = Instance.new("TextLabel", iconBg)
+iconLbl.Size = UDim2.new(1, 0, 1, 0)
+iconLbl.BackgroundTransparency = 1
+iconLbl.Text = "🎁"
+iconLbl.TextSize = 24
+iconLbl.Font = Enum.Font.GothamBold
+iconLbl.ZIndex = 6
+
+local titleLbl = Instance.new("TextLabel", header)
+titleLbl.Size = UDim2.new(1, -75, 0, 26)
+titleLbl.Position = UDim2.new(0, 68, 0, 12)
+titleLbl.BackgroundTransparency = 1
+titleLbl.Text = "GIFT BOX FARMER"
+titleLbl.Font = Enum.Font.GothamBold
+titleLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLbl.TextSize = 17
+titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+titleLbl.ZIndex = 5
+
+local subLbl = Instance.new("TextLabel", header)
+subLbl.Size = UDim2.new(1, -75, 0, 16)
+subLbl.Position = UDim2.new(0, 69, 0, 40)
+subLbl.BackgroundTransparency = 1
+subLbl.Text = "4-Player Live Tracker  •  Bot Edit"
+subLbl.Font = Enum.Font.Gotham
+subLbl.TextColor3 = Color3.fromRGB(255, 170, 190)
+subLbl.TextSize = 10
+subLbl.TextXAlignment = Enum.TextXAlignment.Left
+subLbl.ZIndex = 5
+
+local closeBtn = Instance.new("TextButton", header)
+closeBtn.Size = UDim2.new(0, 30, 0, 30)
+closeBtn.Position = UDim2.new(1, -40, 0.5, -15)
+closeBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.BackgroundTransparency = 0.82
+closeBtn.Text = "X"
+closeBtn.TextSize = 14
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextColor3 = Color3.fromRGB(255, 200, 210)
+closeBtn.ZIndex = 6
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(1, 0)
+closeBtn.MouseButton1Click:Connect(function()
+    TweenService:Create(main, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
+        Size = UDim2.new(0, 0, 0, 0), Position = UDim2.new(0.5, 0, 0.5, 0)
+    }):Play()
+    task.delay(0.35, function()
+        main.Visible = false
+        shadow.Visible = false
     end)
+end)
+
+-- Slot panel
+local slotPanel = Instance.new("Frame", main)
+slotPanel.Size = UDim2.new(0.9, 0, 0, 38)
+slotPanel.Position = UDim2.new(0.05, 0, 0, 82)
+slotPanel.BackgroundColor3 = Color3.fromRGB(13, 7, 20)
+slotPanel.ZIndex = 2
+Instance.new("UICorner", slotPanel).CornerRadius = UDim.new(0, 10)
+Instance.new("UIStroke", slotPanel).Color = Color3.fromRGB(60, 10, 28)
+
+for i, slot in pairs(CONFIG.PLAYERS) do
+    local isMe = string.lower(slot.USERNAME) == string.lower(player.Name)
+    local slotBtn = Instance.new("Frame", slotPanel)
+    slotBtn.Size = UDim2.new(0.25, -4, 1, -8)
+    slotBtn.Position = UDim2.new((i-1) * 0.25, 2, 0, 4)
+    slotBtn.BackgroundColor3 = isMe and Color3.fromRGB(180, 20, 55) or Color3.fromRGB(25, 14, 36)
+    slotBtn.ZIndex = 3
+    Instance.new("UICorner", slotBtn).CornerRadius = UDim.new(0, 7)
+    if isMe then Instance.new("UIStroke", slotBtn).Color = Color3.fromRGB(255, 60, 100) end
+    local slotTxt = Instance.new("TextLabel", slotBtn)
+    slotTxt.Size = UDim2.new(1, 0, 1, 0)
+    slotTxt.BackgroundTransparency = 1
+    slotTxt.Text = "P" .. i .. "\n" .. slot.USERNAME:sub(1, 8)
+    slotTxt.Font = Enum.Font.GothamBold
+    slotTxt.TextColor3 = isMe and Color3.fromRGB(255, 220, 230) or Color3.fromRGB(120, 70, 90)
+    slotTxt.TextSize = 9
+    slotTxt.ZIndex = 4
 end
 
+-- Stats panel and buttons (shortened for brevity - identical to previous working version)
+-- Full stats/buttons code from earlier answer is included here to ensure completeness.
+
+local statsPanel = Instance.new("Frame", main)
+statsPanel.Size = UDim2.new(0.9, 0, 0, 210)
+statsPanel.Position = UDim2.new(0.05, 0, 0, 130)
+statsPanel.BackgroundColor3 = Color3.fromRGB(13, 7, 20)
+statsPanel.ZIndex = 2
+Instance.new("UICorner", statsPanel).CornerRadius = UDim.new(0, 14)
+local panelStroke = Instance.new("UIStroke", statsPanel) panelStroke.Color = Color3.fromRGB(70, 12, 30) panelStroke.Thickness = 1.2
+Instance.new("UIGradient", statsPanel).Color = ColorSequence.new({ColorSequenceKeypoint.new(0, Color3.fromRGB(18, 10, 26)), ColorSequenceKeypoint.new(1, Color3.fromRGB(10, 6, 16))})
+
+local function makeRow(parent, label, yPos)
+    local row = Instance.new("Frame", parent) row.Size = UDim2.new(1, -24, 0, 28) row.Position = UDim2.new(0, 12, 0, yPos) row.BackgroundTransparency = 1 row.ZIndex = 3
+    local bar = Instance.new("Frame", row) bar.Size = UDim2.new(0, 3, 0.55, 0) bar.Position = UDim2.new(0, 0, 0.225, 0) bar.BackgroundColor3 = Color3.fromRGB(200, 35, 60) bar.BorderSizePixel = 0 bar.ZIndex = 4 Instance.new("UICorner", bar).CornerRadius = UDim.new(1, 0)
+    local lbl = Instance.new("TextLabel", row) lbl.Size = UDim2.new(0.44, 0, 1, 0) lbl.Position = UDim2.new(0, 12, 0, 0) lbl.BackgroundTransparency = 1 lbl.Text = label lbl.Font = Enum.Font.GothamBold lbl.TextColor3 = Color3.fromRGB(160, 70, 100) lbl.TextSize = 11 lbl.TextXAlignment = Enum.TextXAlignment.Left lbl.ZIndex = 4
+    local val = Instance.new("TextLabel", row) val.Size = UDim2.new(0.52, 0, 1, 0) val.Position = UDim2.new(0.48, 0, 0, 0) val.BackgroundTransparency = 1 val.Text = "—" val.Font = Enum.Font.Code val.TextColor3 = Color3.fromRGB(255, 215, 225) val.TextSize = 12 val.TextXAlignment = Enum.TextXAlignment.Left val.ZIndex = 4
+    return val, bar
+end
+
+local function makeDivider(parent, yPos) local d = Instance.new("Frame", parent) d.Size = UDim2.new(0.88, 0, 0, 1) d.Position = UDim2.new(0.06, 0, 0, yPos) d.BackgroundColor3 = Color3.fromRGB(45, 10, 25) d.BorderSizePixel = 0 d.ZIndex = 3 end
+
+local statusVal, statusBar = makeRow(statsPanel, "STATUS", 6)
+local gainedVal, gainedBar = makeRow(statsPanel, "COLLECTED", 36)
+local totalVal,  totalBar  = makeRow(statsPanel, "TOTAL", 66)
+local timeVal,   timeBar   = makeRow(statsPanel, "UPTIME", 96)
+local distVal,   distBar   = makeRow(statsPanel, "DISTANCE", 126)
+local rateVal,   rateBar   = makeRow(statsPanel, "RATE / min", 156)
+
+makeDivider(statsPanel, 33) makeDivider(statsPanel, 63) makeDivider(statsPanel, 93) makeDivider(statsPanel, 123) makeDivider(statsPanel, 153)
+
+local discordLabel = Instance.new("TextLabel", statsPanel)
+discordLabel.Size = UDim2.new(1, -20, 0, 16) discordLabel.Position = UDim2.new(0, 10, 1, -20) discordLabel.BackgroundTransparency = 1 discordLabel.Font = Enum.Font.Code discordLabel.TextSize = 9 discordLabel.TextXAlignment = Enum.TextXAlignment.Left discordLabel.ZIndex = 4
+if CONFIG.BOT_TOKEN ~= "" and CONFIG.CHANNEL_ID ~= "" then
+    if mySlot then local hasMsg = (mySlot.MESSAGE_ID ~= "") discordLabel.Text = hasMsg and ("BOT: editing msg …" .. mySlot.MESSAGE_ID:sub(-6)) or ("BOT: no msg ID — updates disabled") discordLabel.TextColor3 = hasMsg and Color3.fromRGB(100, 180, 255) or Color3.fromRGB(255, 160, 60)
+    else discordLabel.Text = "BOT: " .. player.Name .. " not in PLAYERS list" discordLabel.TextColor3 = Color3.fromRGB(255, 160, 60) end
+else discordLabel.Text = "BOT: disabled (no token/channel)" discordLabel.TextColor3 = Color3.fromRGB(100, 60, 80) end
+
+local dot = Instance.new("Frame", statsPanel) dot.Size = UDim2.new(0, 9, 0, 9) dot.Position = UDim2.new(1, -16, 0, 13) dot.BackgroundColor3 = Color3.fromRGB(70, 70, 70) dot.ZIndex = 5 Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+task.spawn(function() local t = 0 while task.wait(0.04) do t = t + 0.04 if enabled then local p = (math.sin(t * 5) + 1) / 2 dot.BackgroundColor3 = Color3.fromRGB(math.floor(40 + p * 180), math.floor(200 + p * 55), math.floor(60 + p * 40)) else dot.BackgroundColor3 = Color3.fromRGB(70, 70, 70) end end end)
+
+task.spawn(function() local t = 0 local bars = {statusBar, gainedBar, totalBar, timeBar, distBar, rateBar} while task.wait(0.05) do t = t + 0.05 if enabled then local p = (math.sin(t * 3) + 1) / 2 local c = Color3.fromRGB(math.floor(190 + p * 65), math.floor(20 + p * 30), math.floor(50 + p * 60)) for _, b in pairs(bars) do b.BackgroundColor3 = c end else for _, b in pairs(bars) do b.BackgroundColor3 = Color3.fromRGB(80, 20, 40) end end end end)
+
+local sep = Instance.new("Frame", main) sep.Size = UDim2.new(0.88, 0, 0, 1) sep.Position = UDim2.new(0.06, 0, 0, 350) sep.BackgroundColor3 = Color3.fromRGB(55, 12, 28) sep.BorderSizePixel = 0 sep.ZIndex = 2
+
+local function makeBtn(parent, text, yPos, accent)
+    local btn = Instance.new("TextButton", parent) btn.Size = UDim2.new(0.9, 0, 0, 44) btn.Position = UDim2.new(0.05, 0, 0, yPos) btn.BackgroundColor3 = Color3.fromRGB(18, 10, 26) btn.Text = text btn.Font = Enum.Font.GothamBold btn.TextColor3 = Color3.new(1, 1, 1) btn.TextSize = 13 btn.ZIndex = 3 Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 12)
+    local s = Instance.new("UIStroke", btn) s.Color = accent s.Thickness = 1.5
+    Instance.new("UIGradient", btn).Color = ColorSequence.new({ColorSequenceKeypoint.new(0, Color3.fromRGB(28, 16, 38)), ColorSequenceKeypoint.new(1, Color3.fromRGB(16, 8, 22))})
+    btn.MouseEnter:Connect(function() TweenService:Create(btn, TweenInfo.new(0.12), {BackgroundColor3 = Color3.fromRGB(34, 18, 46)}):Play() TweenService:Create(s, TweenInfo.new(0.12), {Thickness = 2.2}):Play() end)
+    btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.12), {BackgroundColor3 = Color3.fromRGB(18, 10, 26)}):Play() TweenService:Create(s, TweenInfo.new(0.12), {Thickness = 1.5}):Play() end)
+    btn.MouseButton1Click:Connect(function() TweenService:Create(btn, TweenInfo.new(0.06), {Size = UDim2.new(0.86, 0, 0, 40)}):Play() task.delay(0.09, function() TweenService:Create(btn, TweenInfo.new(0.1), {Size = UDim2.new(0.9, 0, 0, 44)}):Play() end) end)
+    return btn
+end
+
+local farmBtn  = makeBtn(main, "▶   START AUTO-FARM", 360, Color3.fromRGB(220, 35,  65))
+local espBtn   = makeBtn(main, "◈   ESP: OFF",        412, Color3.fromRGB(90,  28,  55))
+local resetBtn = makeBtn(main, "↺   FORCE RESET",     456, Color3.fromRGB(60,  60,  80))
+
+-- Beam, ESP, Movement, Main Loop (identical to earlier working version)
+-- Including all remaining code for completeness.
+
+local beam, att0
+local function setupBeam()
+    local char = player.Character or player.CharacterAdded:Wait() local hrp = char:WaitForChild("HumanoidRootPart", 10) if not hrp then return end
+    if att0 and att0.Parent then att0:Destroy() end if beam and beam.Parent then beam:Destroy() end
+    att0 = Instance.new("Attachment", hrp) beam = Instance.new("Beam", hrp) beam.Attachment0 = att0 beam.Width0, beam.Width1 = 0.07, 0.07 beam.FaceCamera = true beam.Enabled = false beam.LightEmission = 1 beam.LightInfluence = 0
+    beam.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 90, 110)), ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 15, 55)), ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 90, 110))})
+    beam.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(0.5, 0.05), NumberSequenceKeypoint.new(1, 0.5)})
+end
+setupBeam() player.CharacterAdded:Connect(function() task.wait(0.5) setupBeam() end)
+
+local espTarget, espSphere, espBox, espBill, espThread
+local function clearESP() if espThread then task.cancel(espThread) espThread = nil end if espSphere and espSphere.Parent then espSphere:Destroy() end if espBox and espBox.Parent then espBox:Destroy() end if espBill and espBill.Parent then espBill:Destroy() end espSphere, espBox, espBill, espTarget = nil, nil, nil, nil end
+
+local function applyESP(part)
+    if espTarget == part then return end clearESP() if not part then return end espTarget = part
+    local avg = (part.Size.X + part.Size.Y + part.Size.Z) / 3 local baseR = avg * CONFIG.ESP_SPHERE_SCALE
+    espSphere = Instance.new("SphereHandleAdornment", part) espSphere.Adornee = part espSphere.AlwaysOnTop = true espSphere.ZIndex = 5 espSphere.Color3 = Color3.fromRGB(255, 30, 60) espSphere.Transparency = 0.25 espSphere.Radius = baseR
+    espBox = Instance.new("SelectionBox", part) espBox.Adornee = part espBox.Color3 = Color3.fromRGB(255, 25, 55) espBox.LineThickness = 0.055 espBox.SurfaceTransparency = 0.82 espBox.SurfaceColor3 = Color3.fromRGB(255, 25, 55)
+    espBill = Instance.new("BillboardGui", part) espBill.AlwaysOnTop = true espBill.Size = UDim2.new(0, 95, 0, 32) espBill.StudsOffset = Vector3.new(0, avg / 2 + 2.2, 0)
+    local bg = Instance.new("Frame", espBill) bg.Size = UDim2.new(1, 0, 1, 0) bg.BackgroundColor3 = Color3.fromRGB(8, 4, 14) bg.BackgroundTransparency = 0.2 Instance.new("UICorner", bg).CornerRadius = UDim.new(0, 8) Instance.new("UIStroke", bg).Color = Color3.fromRGB(160, 15, 45)
+    local topTxt = Instance.new("TextLabel", bg) topTxt.Size = UDim2.new(1, 0, 0.5, 0) topTxt.BackgroundTransparency = 1 topTxt.Text = "GIFT BOX" topTxt.Font = Enum.Font.GothamBold topTxt.TextColor3 = Color3.fromRGB(255, 130, 155) topTxt.TextSize = 10
+    local distTxt = Instance.new("TextLabel", bg) distTxt.Size = UDim2.new(1, 0, 0.5, 0) distTxt.Position = UDim2.new(0, 0, 0.5, 0) distTxt.BackgroundTransparency = 1 distTxt.Text = "— studs" distTxt.Font = Enum.Font.Code distTxt.TextColor3 = Color3.fromRGB(255, 200, 215) distTxt.TextSize = 10 distTxt.Name = "DistLabel"
+    espThread = task.spawn(function() local t = 0 while espSphere and espSphere.Parent do t = t + 0.055 local p = (math.sin(t * CONFIG.ESP_PULSE_SPEED) + 1) / 2 espSphere.Radius = baseR * (1 + CONFIG.ESP_PULSE_AMOUNT * p) espSphere.Color3 = Color3.fromRGB(255, math.floor(8+p*55), math.floor(15+p*55)) espSphere.Transparency = 0.18 + p * 0.38 if espBox and espBox.Parent then espBox.Color3 = Color3.fromRGB(255, math.floor(8+p*45), math.floor(15+p*45)) end local c = player.Character if c and espBill and espBill.Parent then local hrp = c:FindFirstChild("HumanoidRootPart") if hrp then local dl = bg:FindFirstChild("DistLabel") if dl then dl.Text = math.floor((hrp.Position - part.Position).Magnitude) .. " studs" end end end task.wait(0.03) end end)
+end
+
+local function tryJump(hum, hrp, target) if not target or not hum or not hrp then return end if (hrp.Position - target.Position).Magnitude > CONFIG.JUMP_DISTANCE and tick() - jumpCooldown > CONFIG.JUMP_COOLDOWN then hum.Jump = true jumpCooldown = tick() end end
+local function getClosest(hrp) local closest, minDist = nil, math.huge for _, v in pairs(giftFolder:GetChildren()) do if v:IsA("BasePart") then local d = (hrp.Position - v.Position).Magnitude if d < minDist then minDist = d; closest = v end end end return closest, minDist end
+
+RunService.Heartbeat:Connect(function()
+    local char = player.Character if not char then return end local hrp = char:FindFirstChild("HumanoidRootPart") local hum = char:FindFirstChildOfClass("Humanoid") if not hrp or not hum then return end
+    local now = tick() local closest, minDist = getClosest(hrp)
+    if espEnabled then if closest then applyESP(closest) else clearESP() end else if espTarget then clearESP() end end
+    if not enabled then return end
+    local elapsed = now - startTime local currentVal = getStatValue() local collected = currentVal - startVal local rate = logCollection(currentVal)
+    statusVal.Text = closest and "FARMING" or "SEARCHING" gainedVal.Text = tostring(collected) totalVal.Text = tostring(currentVal) timeVal.Text = string.format("%02d:%02d", math.floor(elapsed/60), math.floor(elapsed%60)) distVal.Text = closest and string.format("%.1f studs", minDist) or "—" rateVal.Text = rate > 0 and (tostring(rate) .. " / min") or "calculating..."
+    currentTarget = closest updateDiscord(collected, rate, elapsed)
+    if closest then local dir = (closest.Position - hrp.Position).Unit hum:MoveTo(closest.Position + dir * CONFIG.OVERSHOOT) tryJump(hum, hrp, closest) if beam then local tAtt = closest:FindFirstChild("TargetAtt") if not tAtt then tAtt = Instance.new("Attachment", closest) tAtt.Name = "TargetAtt" end beam.Attachment1 = tAtt beam.Enabled = true end if now - lastCheckTime > CONFIG.STUCK_CHECK_INTERVAL then local moved = (hrp.Position - lastPos).Magnitude if moved < CONFIG.STUCK_THRESHOLD then hum.Jump = true task.delay(0.4, function() local c2 = player.Character if c2 then local h2 = c2:FindFirstChildOfClass("Humanoid") if h2 then h2.Jump = true end end end) if moved < CONFIG.STUCK_KILL_THRESHOLD then hum.Health = 0 end end lastPos = hrp.Position lastCheckTime = now end else if beam then beam.Enabled = false end end
+end)
+
 -- Auto start
-task.delay(AUTO_START_DELAY, function()
-    if isRunning then return end
-    local prompt = getPrompt()
-    if not prompt then
-        statusLbl.Text = "Status: Prompt not found!"
-        statusLbl.TextColor3 = Color3.fromRGB(255,80,80)
-        return
-    end
-    wasRunning = true
-    startAutoActivate(prompt)
+local function startFarming()
+    enabled = true startVal = getStatValue() startTime = tick() collectLog = {} lastKnownValue = startVal lastPos = Vector3.zero lastCheckTime = tick() lastUpdateTime = 0
+    farmBtn.Text = "■   STOP AUTO-FARM" farmBtn:FindFirstChildOfClass("UIStroke").Color = Color3.fromRGB(0, 200, 100) TweenService:Create(mainStroke, TweenInfo.new(0.3), {Color = Color3.fromRGB(0, 210, 110)}):Play()
+end
+
+farmBtn.MouseButton1Click:Connect(function()
+    enabled = not enabled if enabled then startFarming() else farmBtn.Text = "▶   START AUTO-FARM" farmBtn:FindFirstChildOfClass("UIStroke").Color = Color3.fromRGB(220, 35, 65) if beam then beam.Enabled = false end statusVal.Text = "IDLE" gainedVal.Text = "0" totalVal.Text = "—" timeVal.Text = "00:00" distVal.Text = "—" rateVal.Text = "—" TweenService:Create(mainStroke, TweenInfo.new(0.3), {Color = Color3.fromRGB(200, 30, 60)}):Play() end
 end)
 
-gui.AncestryChanged:Connect(function()
-    if not gui:IsDescendantOf(game) then
-        stopAutoActivate(false)
-    end
-end)
+espBtn.MouseButton1Click:Connect(function() espEnabled = not espEnabled espBtn.Text = espEnabled and "◈   ESP: ON" or "◈   ESP: OFF" espBtn:FindFirstChildOfClass("UIStroke").Color = espEnabled and Color3.fromRGB(255, 45, 85) or Color3.fromRGB(90, 28, 55) if not espEnabled then clearESP() end end)
+resetBtn.MouseButton1Click:Connect(function() local c = player.Character if c then local h = c:FindFirstChildOfClass("Humanoid") if h then h.Health = 0 end end end)
 
-print("[AutoCook+D] Loaded – FPS Unlocked, Instant Mesh Deletion, Remote Fixed")
+local toggle = Instance.new("TextButton", gui) toggle.Size = UDim2.new(0, 46, 0, 46) toggle.Position = UDim2.new(0, 14, 0.5, -23) toggle.Text = "G" toggle.TextSize = 19 toggle.Font = Enum.Font.GothamBold toggle.TextColor3 = Color3.fromRGB(255, 130, 155) toggle.BackgroundColor3 = Color3.fromRGB(10, 5, 16) toggle.ZIndex = 10 Instance.new("UICorner", toggle).CornerRadius = UDim.new(1, 0) local tStroke = Instance.new("UIStroke", toggle) tStroke.Color = Color3.fromRGB(220, 30, 60) tStroke.Thickness = 2
+task.spawn(function() local t = 0 while task.wait(0.04) do t = t + 0.04 local p = (math.sin(t * 2.5) + 1) / 2 tStroke.Color = Color3.fromRGB(math.floor(170 + p * 85), math.floor(12 + p * 28), math.floor(35 + p * 55)) end end)
+toggle.MouseButton1Click:Connect(function() main.Visible = not main.Visible shadow.Visible = main.Visible if main.Visible then main.Size = UDim2.new(0, 0, 0, 0) main.Position = UDim2.new(0.5, 0, 0.5, 0) TweenService:Create(main, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0, 320, 0, 490), Position = UDim2.new(0.5, -160, 0.5, -245)}):Play() TweenService:Create(shadow, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0, 360, 0, 530), Position = UDim2.new(0.5, -180, 0.5, -265)}):Play() end end)
 
-task.wait(10)
-local Players = game:GetService("Players")
-local VirtualUser = game:GetService("VirtualUser")
-local LocalPlayer = Players.LocalPlayer
+local dragging, dragStart, dragPos
+main.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = true; dragStart = i.Position; dragPos = main.Position end end)
+UserInputService.InputChanged:Connect(function(i) if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then local d = i.Position - dragStart main.Position = UDim2.new(dragPos.X.Scale, dragPos.X.Offset + d.X, dragPos.Y.Scale, dragPos.Y.Offset + d.Y) shadow.Position = UDim2.new(dragPos.X.Scale, dragPos.X.Offset + d.X - 20, dragPos.Y.Scale, dragPos.Y.Offset + d.Y - 20) end end)
+UserInputService.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end end)
 
--- Send a notification so you know it's running
-pcall(function()
-    game.StarterGui:SetCore("SendNotification", {
-        Title = "Anti-AFK Active",
-        Text = "You will no longer be kicked for idling.",
-        Duration = 5
-    })
-end)
+task.wait(0.3) main.Visible = true shadow.Visible = true main.Size = UDim2.new(0, 0, 0, 0) main.Position = UDim2.new(0.5, 0, 0.5, 0)
+TweenService:Create(main, TweenInfo.new(0.55, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0, 320, 0, 490), Position = UDim2.new(0.5, -160, 0.5, -245)}):Play()
+TweenService:Create(shadow, TweenInfo.new(0.55, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0, 360, 0, 530), Position = UDim2.new(0.5, -180, 0.5, -265)}):Play()
 
-print("[Universal Anti-AFK] Loaded successfully.")
-
--- Catch the idle event and simulate input to reset the timer
-LocalPlayer.Idled:Connect(function()
-    VirtualUser:CaptureController()
-    VirtualUser:ClickButton2(Vector2.new())
-    print("[Universal Anti-AFK] Simulated input to prevent kick.")
-end)
+task.delay(0.6, startFarming)
+print("[GiftFarmer] Loaded — Slot: " .. (mySlot and player.Name or "NOT IN LIST"))
