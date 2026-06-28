@@ -1,0 +1,202 @@
+-- LocalScript: Player Walk (Forced Loop), Map Cleanup, Baseplate, and Spawned_Part Deletion
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- =============================================
+-- SECTION 1: Configuration
+-- =============================================
+local TARGET_COORD = Vector3.new(202, 3, -1247)
+local SAFE_RADIUS = 20 -- Don't delete anything within 20 studs of target
+
+-- =============================================
+-- SECTION 2: Wait for Character
+-- =============================================
+
+local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart", 10)
+local humanoid = character:WaitForChild("Humanoid", 10)
+
+-- =============================================
+-- SECTION 3: Walk Player to Target (Looped for precision)
+-- =============================================
+
+task.wait(1)
+
+if humanoidRootPart and humanoid then
+	-- We spawn a new thread so the rest of the script doesn't wait forever for arrival
+	task.spawn(function()
+		while character.Parent do
+			-- Calculate distance to target
+			local distance = (humanoidRootPart.Position - TARGET_COORD).Magnitude
+			
+			-- If we are close enough (within 2 studs), stop walking
+			if distance < 2 then
+				break
+			end
+			
+			-- Tell humanoid to move
+			pcall(function()
+				humanoid:MoveTo(TARGET_COORD)
+			end)
+			
+			-- Wait a moment before retrying to prevent spamming
+			task.wait(0.5)
+		end
+	end)
+end
+
+-- =============================================
+-- SECTION 4: Create Baseplate (With Studs)
+-- =============================================
+
+task.wait(0.5)
+
+pcall(function()
+	local baseplate = Instance.new("Part")
+	baseplate.Name = "CustomBaseplate"
+	baseplate.Anchored = true
+	baseplate.CanCollide = true
+	baseplate.Size = Vector3.new(500, 1, 500)
+	
+	-- Changed to Plastic so studs are visible
+	baseplate.Material = Enum.Material.Plastic 
+	baseplate.Transparency = 0
+	
+	-- Using standard grey color for baseplate look
+	baseplate.Color = Color3.fromRGB(163, 162, 165) 
+	
+	-- Position: X and Z from target. Y is Target.Y - 0.5 so the top surface is exactly at 3.
+	baseplate.CFrame = CFrame.new(TARGET_COORD.X, TARGET_COORD.Y - 0.5, TARGET_COORD.Z)
+	baseplate.Parent = Workspace
+end)
+
+-- =============================================
+-- SECTION 5: Map Cleanup - Delete EVERYTHING Except Safe Zone
+-- =============================================
+
+task.wait(0.2)
+
+local function isInsideSafeZone(obj)
+	-- Check if the object has a position
+	local success, pos = pcall(function()
+		return obj:GetPivot().Position
+	end)
+
+	if success and pos then
+		-- Calculate distance from target coordinate
+		if (pos - TARGET_COORD).Magnitude < SAFE_RADIUS then
+			return true
+		end
+	end
+	return false
+end
+
+-- Collect all children of workspace first to avoid iteration issues
+local workspaceChildren = Workspace:GetChildren()
+
+for _, obj in ipairs(workspaceChildren) do
+	pcall(function()
+		-- Skip Camera
+		if obj:IsA("Camera") then return end
+
+		-- Skip Terrain
+		if obj:IsA("Terrain") then return end
+
+		-- Skip LocalPlayer character
+		if obj == LocalPlayer.Character then return end
+
+		-- Skip our own baseplate
+		if obj.Name == "CustomBaseplate" then return end
+
+		-- SAFE ZONE CHECK: Skip if within 20 studs of target
+		if isInsideSafeZone(obj) then return end
+
+		-- Delete everything else
+		obj:Destroy()
+	end)
+end
+
+-- =============================================
+-- SECTION 6: Delete Spawned_Part Continuously
+-- =============================================
+
+local function getNil(name, class)
+	if not getnilinstances then return nil end
+	local ok, result = pcall(function()
+		for _, v in next, getnilinstances() do
+			if v.ClassName == class and v.Name == name then
+				return v
+			end
+		end
+		return nil
+	end)
+	if ok then return result end
+	return nil
+end
+
+local function deleteSpawnedParts()
+	-- From nil instances
+	pcall(function()
+		local part = getNil("Spawned_Part", "MeshPart")
+		if part then
+			pcall(function() part:Destroy() end)
+		end
+	end)
+
+	-- From Workspace
+	pcall(function()
+		for _, obj in ipairs(Workspace:GetDescendants()) do
+			pcall(function()
+				if obj and obj.Name == "Spawned_Part" and obj:IsA("MeshPart") then
+					obj:Destroy()
+				end
+			end)
+		end
+	end)
+end
+
+-- Initial deletion
+deleteSpawnedParts()
+
+-- Watch for newly added Spawned_Parts
+Workspace.DescendantAdded:Connect(function(obj)
+	pcall(function()
+		if obj and obj.Name == "Spawned_Part" and obj:IsA("MeshPart") then
+			task.wait()
+			pcall(function() obj:Destroy() end)
+		end
+	end)
+end)
+
+-- Continuous loop every second
+task.spawn(function()
+	while true do
+		task.wait(1)
+		deleteSpawnedParts()
+	end
+end)
+
+-- =============================================
+-- SECTION 7: Watch for New Objects Added to Workspace
+-- =============================================
+
+Workspace.ChildAdded:Connect(function(obj)
+	task.wait(0.1)
+	pcall(function()
+		-- Keep these always
+		if obj:IsA("Camera") then return end
+		if obj:IsA("Terrain") then return end
+		if obj == LocalPlayer.Character then return end
+		if obj.Name == "CustomBaseplate" then return end
+
+		-- SAFE ZONE CHECK: Keep if within 20 studs
+		if isInsideSafeZone(obj) then return end
+
+		-- Delete anything else added
+		obj:Destroy()
+	end)
+end)
