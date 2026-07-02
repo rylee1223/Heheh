@@ -5,10 +5,11 @@
     ============================================================
     Features:
       • Auto-profile detection (Roblox UserId based)
-      • Single-message UI (edits instead of spamming)
+      • Single-message UI (edits ONE message, never spams)
       • Live server player list for receiver selection
       • Quick "Max All (100 cap)" quantity button
       • Saved trades (JSON persistence via writefile/readfile)
+      • Export trade as JSON text / Load trade from JSON text
       • Full trade workflow with inline keyboards
     ============================================================
 --]]
@@ -24,8 +25,8 @@ local RunService        = game:GetService("RunService")
 -- ============================================================
 -- CONSTANTS
 -- ============================================================
-local POLL_INTERVAL    = 2       -- seconds between Telegram polls
-local MAX_QTY_PER_ITEM = 100     -- hard cap used by "Quick Max"
+local POLL_INTERVAL    = 2
+local MAX_QTY_PER_ITEM = 100
 local SAVE_FILE        = "TradeManager_SavedTrades.json"
 
 -- ============================================================
@@ -60,7 +61,6 @@ local PROFILES = {
 
 -- ============================================================
 -- MODULE: Config
--- Auto-resolves the active profile from LocalPlayer.UserId.
 -- ============================================================
 local Config = {}
 do
@@ -91,7 +91,6 @@ end
 
 -- ============================================================
 -- MODULE: TelegramAPI
--- Uses executor's HTTP function to bypass Roblox restrictions.
 -- ============================================================
 local TelegramAPI = {}
 do
@@ -144,22 +143,39 @@ do
         })
     end
 
-    function TelegramAPI.sendMessage(token, chatId, text, replyMarkup)
-        return post(token, "sendMessage", {
-            chat_id      = chatId,
-            text         = text,
-            parse_mode   = "Markdown",
-            reply_markup = replyMarkup or nil,
-        })
+    function TelegramAPI.sendMessage(token, chatId, text, replyMarkup, parseMode)
+        local payload = {
+            chat_id = chatId,
+            text    = text,
+        }
+        if parseMode then
+            payload.parse_mode = parseMode
+        end
+        if replyMarkup then
+            payload.reply_markup = replyMarkup
+        end
+        return post(token, "sendMessage", payload)
     end
 
-    function TelegramAPI.editMessage(token, chatId, messageId, text, replyMarkup)
-        return post(token, "editMessageText", {
-            chat_id      = chatId,
-            message_id   = messageId,
-            text         = text,
-            parse_mode   = "Markdown",
-            reply_markup = replyMarkup or nil,
+    function TelegramAPI.editMessage(token, chatId, messageId, text, replyMarkup, parseMode)
+        local payload = {
+            chat_id    = chatId,
+            message_id = messageId,
+            text       = text,
+        }
+        if parseMode then
+            payload.parse_mode = parseMode
+        end
+        if replyMarkup then
+            payload.reply_markup = replyMarkup
+        end
+        return post(token, "editMessageText", payload)
+    end
+
+    function TelegramAPI.deleteMessage(token, chatId, messageId)
+        return post(token, "deleteMessage", {
+            chat_id    = chatId,
+            message_id = messageId,
         })
     end
 
@@ -173,11 +189,9 @@ end
 
 -- ============================================================
 -- MODULE: Storage
--- Persists saved trades to disk via executor file I/O.
 -- ============================================================
 local Storage = {}
 do
-    -- Safe wrappers: not all executors expose file I/O
     local hasFileIO = (writefile and readfile and isfile) ~= nil
 
     function Storage.load()
@@ -264,7 +278,6 @@ end
 
 -- ============================================================
 -- MODULE: ServerPlayers
--- Lists other players currently in the server.
 -- ============================================================
 local ServerPlayers = {}
 do
@@ -302,7 +315,11 @@ do
                 {text = "⚡ Quick Max (100)", callback_data = "action:quickMax"},
             },
             {
-                {text = "💾 Saved Trades",    callback_data = "action:savedTrades"},
+                {text = "📋 Load JSON",      callback_data = "action:loadJson"},
+                {text = "💾 Export JSON",     callback_data = "action:exportJson"},
+            },
+            {
+                {text = "📂 Saved Trades",    callback_data = "action:savedTrades"},
                 {text = "📤 Send Trade",       callback_data = "action:sendTrade"},
             },
         })
@@ -412,6 +429,18 @@ do
         return markup(rows)
     end
 
+    function Keyboards.jsonExport()
+        return markup({
+            {
+                {text = "📋 Load JSON",  callback_data = "action:loadJson"},
+                {text = "💾 Save to File", callback_data = "action:saveCurrent"},
+            },
+            {
+                {text = "◀️ Main Menu",  callback_data = "action:mainMenu"},
+            },
+        })
+    end
+
     function Keyboards.backOnly()
         return markup({{{text = "◀️ Main Menu", callback_data = "action:mainMenu"}}})
     end
@@ -428,6 +457,7 @@ end
 
 -- ============================================================
 -- MODULE: TradeState
+-- Modifies table in-place so the Poller's reference stays valid.
 -- ============================================================
 local TradeState = {}
 do
@@ -437,16 +467,18 @@ do
 
     function TradeState.reset()
         local profile = Config.get()
-        TradeState._state = {
-            inventory     = {},
-            selected      = {},
-            tradeItems    = {},
-            receiver      = profile.receiver or nil,
-            awaitingInput = nil,
-            chatId        = nil,
-            uiMessageId   = nil,   -- the single message we keep editing
-            savedTrades   = Storage.load(),
-        }
+        local s = TradeState._state
+        -- Clear existing keys (preserves table reference for Poller)
+        for k in pairs(s) do s[k] = nil end
+        -- Re-initialise
+        s.inventory     = {}
+        s.selected      = {}
+        s.tradeItems    = {}
+        s.receiver      = profile.receiver or nil
+        s.awaitingInput = nil
+        s.chatId        = nil
+        s.uiMessageId   = nil
+        s.savedTrades   = Storage.load()
     end
 end
 
@@ -512,34 +544,34 @@ end
 
 -- ============================================================
 -- MODULE: UI
--- Central helper for the single-message UI paradigm.
+-- Single-message UI helper.
+-- noFormat = true  → sends without parse_mode (raw text, safe for JSON)
+-- noFormat = false/nil → uses Markdown
 -- ============================================================
 local UI = {}
 do
     local cfg   = Config.get()
     local token = cfg.token
 
-    -- Renders text + keyboard to the persistent UI message.
-    -- If the message doesn't exist yet, creates it.
-    function UI.render(state, text, keyboard)
+    function UI.render(state, text, keyboard, noFormat)
         if not state.chatId then return end
+
+        local pm = (not noFormat) and "Markdown" or nil
 
         if state.uiMessageId then
             local result = TelegramAPI.editMessage(
-                token, state.chatId, state.uiMessageId, text, keyboard
+                token, state.chatId, state.uiMessageId, text, keyboard, pm
             )
-            -- If edit fails (e.g. message deleted), send a new one
             if not result then
-                local newMsg = TelegramAPI.sendMessage(token, state.chatId, text, keyboard)
+                local newMsg = TelegramAPI.sendMessage(token, state.chatId, text, keyboard, pm)
                 if newMsg then state.uiMessageId = newMsg.message_id end
             end
         else
-            local newMsg = TelegramAPI.sendMessage(token, state.chatId, text, keyboard)
+            local newMsg = TelegramAPI.sendMessage(token, state.chatId, text, keyboard, pm)
             if newMsg then state.uiMessageId = newMsg.message_id end
         end
     end
 
-    -- Short-lived toast notifications via callback answer popup
     function UI.toast(callbackId, text)
         TelegramAPI.answerCallback(token, callbackId, text)
     end
@@ -547,7 +579,6 @@ end
 
 -- ============================================================
 -- MODULE: Screens
--- Each function renders a specific "screen" to the UI message.
 -- ============================================================
 local Screens = {}
 do
@@ -645,6 +676,49 @@ do
 
         UI.render(state, table.concat(lines, "\n"), Keyboards.confirmSend())
     end
+
+    -- -------------------------------------------------------
+    -- NEW: Export current trade as JSON text
+    -- -------------------------------------------------------
+    function Screens.exportJson(state)
+        if not next(state.tradeItems) then
+            UI.render(state, "⚠️ No items to export.\nSelect items first.", Keyboards.backOnly())
+            return
+        end
+
+        local exportData = {
+            items    = state.tradeItems,
+            receiver = state.receiver or "",
+        }
+
+        local ok, jsonStr = pcall(HttpService.JSONEncode, HttpService, exportData)
+        if not ok then
+            UI.render(state, "❌ Failed to encode JSON.", Keyboards.backOnly())
+            return
+        end
+
+        -- Send as plain text (no Markdown) so JSON is safe to copy
+        local displayText = "💾 Trade JSON — copy the text below:\n\n" .. jsonStr
+            .. "\n\n📋 Use 'Load JSON' and paste this text to restore the trade."
+
+        UI.render(state, displayText, Keyboards.jsonExport(), true)  -- true = noFormat
+    end
+
+    -- -------------------------------------------------------
+    -- NEW: Prompt user to paste JSON
+    -- -------------------------------------------------------
+    function Screens.loadJsonPrompt(state)
+        state.awaitingInput = "loadJson"
+
+        local exampleJson = HttpService:JSONEncode({items = {Sword = 5, Shield = 10}, receiver = "PlayerName"})
+
+        local text = "📋 *Load Trade from JSON*\n\n"
+            .. "Paste your trade JSON as a chat message.\n\n"
+            .. "_Example format:_\n"
+            .. exampleJson
+
+        UI.render(state, text, Keyboards.backOnly())
+    end
 end
 
 -- ============================================================
@@ -688,7 +762,6 @@ do
             UI.toast(callbackId, "Cleared all")
 
         elseif action == "setQuantities" then
-            -- Sync tradeItems with selection
             for name in pairs(state.selected) do
                 if not state.tradeItems[name] then state.tradeItems[name] = 1 end
             end
@@ -700,14 +773,12 @@ do
         elseif action == "quickMax" then
             state.inventory = Inventory.snapshot()
 
-            -- If nothing selected, select everything in inventory first
             if not next(state.selected) then
                 for name in pairs(state.inventory) do
                     state.selected[name] = true
                 end
             end
 
-            -- Set every selected item to min(inventory, 100)
             for name in pairs(state.selected) do
                 local invQty = state.inventory[name] or 0
                 state.tradeItems[name] = math.min(invQty, MAX_QTY_PER_ITEM)
@@ -740,6 +811,18 @@ do
                 Keyboards.backOnly()
             )
 
+        -- =====================================================
+        -- NEW: Export JSON
+        -- =====================================================
+        elseif action == "exportJson" then
+            Screens.exportJson(state)
+
+        -- =====================================================
+        -- NEW: Load JSON prompt
+        -- =====================================================
+        elseif action == "loadJson" then
+            Screens.loadJsonPrompt(state)
+
         elseif action == "sendTrade" then
             if not next(state.tradeItems) then
                 UI.toast(callbackId, "❌ No items selected")
@@ -754,9 +837,8 @@ do
         elseif action == "confirmSend" then
             UI.render(state, "⏳ Sending trade...", nil)
             local success, msg = TradeExecutor.send(state)
-            UI.toast(callbackId, success and "✅ Sent!" or "❌ Failed")
 
-            -- Give feedback, then return to main menu
+            -- Show result in same message, then return to menu
             UI.render(state, msg .. "\n\nReturning to main menu...", nil)
             wait(1.5)
             Screens.mainMenu(state)
@@ -789,7 +871,7 @@ do
             state.tradeItems[itemName] = 1
         end
 
-        local invMax = state.inventory[itemName] or MAX_QTY_PER_ITEM
+        local invMax  = state.inventory[itemName] or MAX_QTY_PER_ITEM
         local hardMax = math.min(invMax, MAX_QTY_PER_ITEM)
 
         if op == "inc" then
@@ -833,7 +915,6 @@ do
             return
         end
 
-        -- Restore items
         state.tradeItems = {}
         state.selected   = {}
         for itemName, qty in pairs(trade.items or {}) do
@@ -841,7 +922,6 @@ do
             state.selected[itemName]   = true
         end
 
-        -- Restore receiver if set
         if trade.receiver and #trade.receiver > 0 then
             state.receiver = trade.receiver
         end
@@ -882,7 +962,6 @@ do
                 return
             end
 
-            -- Snapshot current trade
             local snapshot = {items = {}, receiver = state.receiver}
             for k, v in pairs(state.tradeItems) do
                 snapshot.items[k] = v
@@ -891,6 +970,55 @@ do
             state.savedTrades[name] = snapshot
             Storage.save(state.savedTrades)
             Screens.savedTrades(state)
+
+        -- =====================================================
+        -- NEW: Load trade from pasted JSON text
+        -- =====================================================
+        elseif input == "loadJson" then
+            local cleaned = text:match("^%s*(.-)%s*$") or text
+            local decodeOk, data = pcall(HttpService.JSONDecode, HttpService, cleaned)
+
+            if not decodeOk or type(data) ~= "table" then
+                UI.render(state,
+                    "❌ *Invalid JSON.* Please paste valid JSON.\n\nTry again or go back.",
+                    Keyboards.backOnly()
+                )
+                -- Re-enable awaiting so they can retry
+                state.awaitingInput = "loadJson"
+                return
+            end
+
+            -- Clear current trade
+            state.tradeItems = {}
+            state.selected   = {}
+
+            -- Load items
+            if type(data.items) == "table" then
+                for itemName, qty in pairs(data.items) do
+                    if type(itemName) == "string" and type(qty) == "number" and qty > 0 then
+                        state.tradeItems[itemName] = math.min(qty, MAX_QTY_PER_ITEM)
+                        state.selected[itemName]   = true
+                    end
+                end
+            end
+
+            -- Load receiver
+            if type(data.receiver) == "string" and #data.receiver > 0 then
+                state.receiver = data.receiver
+            end
+
+            -- Update inventory snapshot for quantity editing
+            state.inventory = Inventory.snapshot()
+
+            local itemCount = 0
+            for _ in pairs(state.tradeItems) do itemCount = itemCount + 1 end
+
+            UI.render(state,
+                "✅ *Trade loaded from JSON!*\n\n"
+                .. "📦 " .. itemCount .. " item(s) loaded\n"
+                .. "📥 Receiver: `" .. (state.receiver or "not set") .. "`",
+                Keyboards.mainMenu()
+            )
 
         elseif input:sub(1, 4) == "qty:" then
             local itemName = input:sub(5)
@@ -925,7 +1053,7 @@ do
             state.chatId      = chatId
             state.uiMessageId = cq.message.message_id
 
-            -- Acknowledge quickly to remove loading spinner (unless overridden by toast)
+            -- Acknowledge quickly to remove loading spinner
             TelegramAPI.answerCallback(token, cq.id)
 
             if data:sub(1, 7) == "action:" then
@@ -967,11 +1095,13 @@ do
             state.chatId = chatId
 
             if text == "/start" then
-                -- Fresh session; forget the old UI message
+                -- Preserve the existing UI message so we EDIT it, not create a new one
+                local savedMsgId  = state.uiMessageId
+                local savedChatId = state.chatId
                 TradeState.reset()
-                local s = TradeState.get()
-                s.chatId = chatId
-                Screens.mainMenu(s)
+                state.chatId      = savedChatId
+                state.uiMessageId = savedMsgId
+                Screens.mainMenu(state)
                 return
             end
 
@@ -980,9 +1110,19 @@ do
                 return
             end
 
-            -- Unknown message: nudge the user
-            local nudge = TelegramAPI.sendMessage(token, chatId,
-                "Send /start to open the Trade Manager.", nil)
+            -- Unrecognised message → nudge via the same UI message (no spam)
+            if state.uiMessageId then
+                UI.render(state,
+                    "⚠️ Send /start to open the Trade Manager.",
+                    Keyboards.backOnly()
+                )
+            else
+                -- No UI message yet; send one and track it
+                UI.render(state,
+                    "⚠️ Send /start to open the Trade Manager.",
+                    Keyboards.backOnly()
+                )
+            end
         end
     end
 end
