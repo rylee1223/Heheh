@@ -1,0 +1,795 @@
+--[[
+    ============================================================
+    Telegram Trade Manager
+    LocalScript / Executor Script
+    ============================================================
+    Allows remote trade management via a Telegram bot.
+    Supports up to 4 configuration profiles, each keyed by
+    Telegram User ID AND Roblox User ID.
+
+    Uses executor's HTTP request function to bypass Roblox's
+    api.telegram.org block.
+    ============================================================
+--]]
+
+-- ============================================================
+-- SERVICES
+-- ============================================================
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService       = game:GetService("HttpService")
+local RunService        = game:GetService("RunService")
+
+-- ============================================================
+-- CONFIGURATION PROFILES (edit these)
+-- ============================================================
+--[[
+    Each profile contains:
+        token         : Telegram Bot API token (string)
+        telegramId    : Authorized Telegram user ID (number)
+        robloxId      : Roblox UserId this profile is bound to (number)
+        receiver      : Optional default trade receiver username (string | nil)
+
+    The active profile is auto-selected at runtime by matching
+    the LocalPlayer.UserId against each profile's robloxId.
+--]]
+local PROFILES = {
+    [1] = {
+        token      = "8735581555:AAHO7_JgpSltftxAybj2rTsGATBhoWxRjhg",
+        telegramId = 6718137076,
+        robloxId   = 9222143452,
+        receiver   = "",
+    },
+    [2] = {
+        token      = "8416075322:AAEma18a64q296jW23c48BiyPj5fKjv2V2Q",
+        telegramId = 6718137076,
+        robloxId   = 11091903846,
+        receiver   = "",
+    },
+    [3] = {
+        token      = "8706242651:AAH1ULFav8igl-WaKs53ajYfCZ9VFpvB6Hs",
+        telegramId = 6718137076,
+        robloxId   = 11091901806,
+        receiver   = "",
+    },
+    [4] = {
+        token      = "8534741769:AAHziKpPSzjZY-WJQY2JRi2Ps89Tbyqr6nY",
+        telegramId = 6718137076,
+        robloxId   = 9019206562,
+        receiver   = "",
+    },
+}
+
+-- Polling interval in seconds
+local POLL_INTERVAL = 2
+
+-- ============================================================
+-- MODULE: Config
+-- Auto-resolves the active configuration profile based on
+-- the local player's Roblox UserId.
+-- ============================================================
+local Config = {}
+do
+    local resolvedProfile = nil
+    local resolvedIndex   = nil
+
+    function Config.get()
+        if resolvedProfile then
+            return resolvedProfile, resolvedIndex
+        end
+
+        local localId = Players.LocalPlayer.UserId
+
+        for index, profile in ipairs(PROFILES) do
+            if profile.robloxId == localId then
+                assert(type(profile.token) == "string" and #profile.token > 0,
+                    "[Config] Profile #" .. index .. " token is missing.")
+                assert(type(profile.telegramId) == "number",
+                    "[Config] Profile #" .. index .. " telegramId must be a number.")
+
+                resolvedProfile = profile
+                resolvedIndex   = index
+
+                print(("[Config] Loaded profile #%d for Roblox ID %d (Telegram ID %d)")
+                    :format(index, profile.robloxId, profile.telegramId))
+
+                return profile, index
+            end
+        end
+
+        error("[Config] No profile found for Roblox UserId " .. localId
+              .. ". Add this account to PROFILES or run on an authorized account.")
+    end
+end
+
+-- ============================================================
+-- MODULE: TelegramAPI
+-- Uses executor's HTTP function to bypass Roblox restrictions.
+-- ============================================================
+local TelegramAPI = {}
+do
+    local BASE = "https://api.telegram.org/bot"
+
+    -- Auto-detect the executor's HTTP request function
+    local httpRequest = (syn and syn.request)
+        or (http and http.request)
+        or http_request
+        or (fluxus and fluxus.request)
+        or request
+
+    assert(httpRequest, "[TelegramAPI] No HTTP request function found. "
+        .. "This script must be run via an executor that provides an HTTP function "
+        .. "(syn.request, http.request, http_request, or request).")
+
+    -- Internal: perform a POST request to a Telegram method
+    local function post(token, method, payload)
+        local url  = BASE .. token .. "/" .. method
+        local body = HttpService:JSONEncode(payload)
+
+        local ok, response = pcall(httpRequest, {
+            Url     = url,
+            Method  = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json",
+            },
+            Body = body,
+        })
+
+        if not ok then
+            warn("[TelegramAPI] Request failed on '" .. method .. "': " .. tostring(response))
+            return nil
+        end
+
+        if not response or not response.Body then
+            warn("[TelegramAPI] Empty response on '" .. method .. "'")
+            return nil
+        end
+
+        local decodeOk, decoded = pcall(HttpService.JSONDecode, HttpService, response.Body)
+        if not decodeOk then
+            warn("[TelegramAPI] JSON decode failed on '" .. method .. "': " .. tostring(response.Body))
+            return nil
+        end
+
+        if not decoded.ok then
+            warn("[TelegramAPI] API error on '" .. method .. "': " .. tostring(decoded.description))
+            return nil
+        end
+
+        return decoded.result
+    end
+
+    function TelegramAPI.getUpdates(token, offset)
+        return post(token, "getUpdates", {
+            offset          = offset,
+            timeout         = 1,
+            allowed_updates = {"message", "callback_query"},
+        })
+    end
+
+    function TelegramAPI.sendMessage(token, chatId, text, replyMarkup)
+        return post(token, "sendMessage", {
+            chat_id      = chatId,
+            text         = text,
+            parse_mode   = "Markdown",
+            reply_markup = replyMarkup or nil,
+        })
+    end
+
+    function TelegramAPI.editMessage(token, chatId, messageId, text, replyMarkup)
+        return post(token, "editMessageText", {
+            chat_id      = chatId,
+            message_id   = messageId,
+            text         = text,
+            parse_mode   = "Markdown",
+            reply_markup = replyMarkup or nil,
+        })
+    end
+
+    function TelegramAPI.answerCallback(token, callbackId, text)
+        return post(token, "answerCallbackQuery", {
+            callback_query_id = callbackId,
+            text              = text or "",
+        })
+    end
+
+    function TelegramAPI.deleteMessage(token, chatId, messageId)
+        return post(token, "deleteMessage", {
+            chat_id    = chatId,
+            message_id = messageId,
+        })
+    end
+end
+
+-- ============================================================
+-- MODULE: Inventory
+-- Reads the local player's inventory.
+-- ============================================================
+local Inventory = {}
+do
+    local LocalPlayer = Players.LocalPlayer
+
+    function Inventory.snapshot()
+        local inv = LocalPlayer.inventory
+        if not inv then
+            warn("[Inventory] 'inventory' is nil on LocalPlayer.")
+            return {}
+        end
+
+        local snapshot = {}
+
+        if typeof(inv) == "table" then
+            for item, qty in pairs(inv) do
+                if type(item) == "string" and type(qty) == "number" then
+                    snapshot[item] = qty
+                end
+            end
+        elseif typeof(inv) == "Instance" then
+            for _, child in ipairs(inv:GetChildren()) do
+                if child:IsA("NumberValue") or child:IsA("IntValue") then
+                    snapshot[child.Name] = child.Value
+                end
+            end
+        end
+
+        return snapshot
+    end
+
+    function Inventory.format(snapshot)
+        if not next(snapshot) then
+            return "_Your inventory is empty._"
+        end
+
+        local lines  = {"*Your Inventory:*", ""}
+        local sorted = {}
+
+        for item, qty in pairs(snapshot) do
+            table.insert(sorted, {name = item, qty = qty})
+        end
+        table.sort(sorted, function(a, b) return a.name < b.name end)
+
+        for _, entry in ipairs(sorted) do
+            table.insert(lines, string.format("• `%s` — x%d", entry.name, entry.qty))
+        end
+
+        return table.concat(lines, "\n")
+    end
+end
+
+-- ============================================================
+-- MODULE: Keyboards
+-- Builds Telegram inline keyboard reply markups.
+-- ============================================================
+local Keyboards = {}
+do
+    local function markup(rows)
+        return {inline_keyboard = rows}
+    end
+
+    function Keyboards.mainMenu()
+        return markup({
+            {
+                {text = "📦 View Inventory", callback_data = "action:viewInventory"},
+                {text = "🔄 Refresh",         callback_data = "action:refreshInventory"},
+            },
+            {
+                {text = "🛒 Select Items",    callback_data = "action:selectItems"},
+                {text = "🔢 Set Quantities",  callback_data = "action:setQuantities"},
+            },
+            {
+                {text = "👤 Select Receiver", callback_data = "action:selectReceiver"},
+                {text = "📤 Send Trade",       callback_data = "action:sendTrade"},
+            },
+        })
+    end
+
+    function Keyboards.itemSelect(snapshot, selected)
+        local rows, row, count = {}, {}, 0
+        local sorted = {}
+
+        for name in pairs(snapshot) do
+            table.insert(sorted, name)
+        end
+        table.sort(sorted)
+
+        for _, name in ipairs(sorted) do
+            local icon = selected[name] and "✅" or "⬜"
+            table.insert(row, {
+                text          = icon .. " " .. name,
+                callback_data = "toggle:" .. name,
+            })
+            count = count + 1
+            if count % 2 == 0 then
+                table.insert(rows, row)
+                row = {}
+            end
+        end
+        if #row > 0 then table.insert(rows, row) end
+
+        table.insert(rows, {
+            {text = "✔️ Done",  callback_data = "action:doneSelectItems"},
+            {text = "◀️ Back", callback_data = "action:mainMenu"},
+        })
+
+        return markup(rows)
+    end
+
+    function Keyboards.quantityEditor(tradeItems)
+        local rows   = {}
+        local sorted = {}
+
+        for name in pairs(tradeItems) do
+            table.insert(sorted, name)
+        end
+        table.sort(sorted)
+
+        for _, name in ipairs(sorted) do
+            local qty = tradeItems[name]
+            table.insert(rows, {
+                {text = name .. " (x" .. qty .. ")", callback_data = "noop"},
+            })
+            table.insert(rows, {
+                {text = "➖",     callback_data = "qty:dec:" .. name},
+                {text = "✏️ Set", callback_data = "qty:set:" .. name},
+                {text = "➕",     callback_data = "qty:inc:" .. name},
+            })
+        end
+
+        table.insert(rows, {
+            {text = "✔️ Done",  callback_data = "action:doneSetQuantities"},
+            {text = "◀️ Back", callback_data = "action:mainMenu"},
+        })
+
+        return markup(rows)
+    end
+
+    function Keyboards.backOnly()
+        return markup({
+            {{text = "◀️ Main Menu", callback_data = "action:mainMenu"}},
+        })
+    end
+end
+
+-- ============================================================
+-- MODULE: TradeState
+-- Holds the mutable state of the current trade session.
+-- ============================================================
+local TradeState = {}
+do
+    TradeState._state = {}
+
+    function TradeState.get()
+        return TradeState._state
+    end
+
+    function TradeState.reset()
+        local profile = Config.get()
+        TradeState._state = {
+            inventory     = {},
+            selected      = {},
+            tradeItems    = {},
+            receiver      = profile.receiver or nil,
+            awaitingInput = nil,
+            lastMessageId = nil,
+            chatId        = nil,
+        }
+    end
+end
+
+-- ============================================================
+-- MODULE: TradeExecutor
+-- Fires the trade remote with the current trade state.
+-- ============================================================
+local TradeExecutor = {}
+do
+    function TradeExecutor.send(state)
+        if not state.receiver or #state.receiver == 0 then
+            return false, "❌ No receiver set. Use *Select Receiver* first."
+        end
+
+        if not next(state.tradeItems) then
+            return false, "❌ No items selected. Use *Select Items* first."
+        end
+
+        local receiverPlayer = Players:FindFirstChild(state.receiver)
+        if not receiverPlayer then
+            return false, "❌ Player `" .. state.receiver .. "` is not in the server."
+        end
+
+        local itemsTable = {}
+        for name, qty in pairs(state.tradeItems) do
+            if qty > 0 then itemsTable[name] = qty end
+        end
+
+        if not next(itemsTable) then
+            return false, "❌ All item quantities are zero. Adjust quantities first."
+        end
+
+        local args = {
+            [1] = {
+                ["SenderContents"] = {
+                    ["Items"]    = itemsTable,
+                    ["Currency"] = {},
+                },
+                ["Receiver"] = receiverPlayer,
+                ["ReceiverContents"] = {
+                    ["Items"]    = {},
+                    ["Currency"] = {},
+                },
+            },
+        }
+
+        local ok, err = pcall(function()
+            ReplicatedStorage
+                .Remotes
+                :FindFirstChild("Trade System")
+                .SendTrade
+                :InvokeServer(unpack(args))
+        end)
+
+        if not ok then
+            return false, "❌ Remote error: `" .. tostring(err) .. "`"
+        end
+
+        return true, "✅ Trade sent to `" .. state.receiver .. "` successfully!"
+    end
+end
+
+-- ============================================================
+-- MODULE: MessageHandler
+-- Processes incoming Telegram updates and drives the UI.
+-- ============================================================
+local MessageHandler = {}
+do
+    local cfg    = Config.get()
+    local token  = cfg.token
+    local authId = cfg.telegramId
+
+    -- --------------------------------------------------------
+    -- Helpers
+    -- --------------------------------------------------------
+    local function countTable(t)
+        local n = 0
+        for _ in pairs(t) do n = n + 1 end
+        return n
+    end
+
+    local function showMainMenu(chatId, state)
+        local text = table.concat({
+            "*🤖 Trade Manager — Main Menu*",
+            "",
+            "Roblox account: `" .. Players.LocalPlayer.Name
+                .. "` (ID " .. Players.LocalPlayer.UserId .. ")",
+            "Receiver: `" .. (state.receiver or "_not set_") .. "`",
+            "Items selected: `" .. countTable(state.selected) .. "`",
+        }, "\n")
+
+        local result = TelegramAPI.sendMessage(token, chatId, text, Keyboards.mainMenu())
+        if result then
+            state.lastMessageId = result.message_id
+        end
+    end
+
+    -- --------------------------------------------------------
+    -- Action dispatcher
+    -- --------------------------------------------------------
+    local function handleAction(action, chatId, messageId, state)
+
+        if action == "viewInventory" or action == "refreshInventory" then
+            state.inventory = Inventory.snapshot()
+            local text = Inventory.format(state.inventory)
+            TelegramAPI.editMessage(token, chatId, messageId, text, Keyboards.backOnly())
+
+        elseif action == "selectItems" then
+            state.inventory = Inventory.snapshot()
+
+            if not next(state.inventory) then
+                TelegramAPI.editMessage(
+                    token, chatId, messageId,
+                    "⚠️ Your inventory is empty.",
+                    Keyboards.backOnly()
+                )
+                return
+            end
+
+            TelegramAPI.editMessage(
+                token, chatId, messageId,
+                "*Select items to trade:*\nTap an item to toggle it.",
+                Keyboards.itemSelect(state.inventory, state.selected)
+            )
+
+        elseif action == "doneSelectItems" then
+            for name in pairs(state.selected) do
+                if not state.tradeItems[name] then
+                    state.tradeItems[name] = 1
+                end
+            end
+            for name in pairs(state.tradeItems) do
+                if not state.selected[name] then
+                    state.tradeItems[name] = nil
+                end
+            end
+
+            TelegramAPI.editMessage(
+                token, chatId, messageId,
+                "✅ *" .. countTable(state.selected) .. " item(s) selected.*",
+                Keyboards.backOnly()
+            )
+
+        elseif action == "setQuantities" then
+            if not next(state.tradeItems) then
+                TelegramAPI.editMessage(
+                    token, chatId, messageId,
+                    "⚠️ No items selected yet. Use *Select Items* first.",
+                    Keyboards.backOnly()
+                )
+                return
+            end
+
+            TelegramAPI.editMessage(
+                token, chatId, messageId,
+                "*Set quantities for each item:*",
+                Keyboards.quantityEditor(state.tradeItems)
+            )
+
+        elseif action == "doneSetQuantities" then
+            local lines = {"*Current trade items:*", ""}
+            for name, qty in pairs(state.tradeItems) do
+                table.insert(lines, string.format("• `%s` × %d", name, qty))
+            end
+            TelegramAPI.editMessage(
+                token, chatId, messageId,
+                table.concat(lines, "\n"),
+                Keyboards.backOnly()
+            )
+
+        elseif action == "selectReceiver" then
+            state.awaitingInput = "receiver"
+            state.lastMessageId = messageId
+            TelegramAPI.editMessage(
+                token, chatId, messageId,
+                "👤 *Enter the exact Roblox username of the receiver:*\n_(Send as a chat message)_",
+                Keyboards.backOnly()
+            )
+
+        elseif action == "sendTrade" then
+            local lines = {
+                "*📤 Confirm Trade*", "",
+                "Receiver: `" .. (state.receiver or "_not set_") .. "`",
+                "Items:",
+            }
+            for name, qty in pairs(state.tradeItems) do
+                table.insert(lines, string.format("  • `%s` × %d", name, qty))
+            end
+            table.insert(lines, "")
+            table.insert(lines, "Sending...")
+
+            TelegramAPI.editMessage(token, chatId, messageId, table.concat(lines, "\n"), nil)
+
+            local success, msg = TradeExecutor.send(state)
+            TelegramAPI.sendMessage(token, chatId, msg, Keyboards.backOnly())
+
+            if success then
+                state.selected   = {}
+                state.tradeItems = {}
+            end
+
+        elseif action == "mainMenu" then
+            TelegramAPI.deleteMessage(token, chatId, messageId)
+            showMainMenu(chatId, state)
+
+        else
+            warn("[MessageHandler] Unknown action: " .. tostring(action))
+        end
+    end
+
+    local function handleToggle(itemName, chatId, messageId, state)
+        if state.selected[itemName] then
+            state.selected[itemName] = nil
+        else
+            state.selected[itemName] = true
+        end
+
+        TelegramAPI.editMessage(
+            token, chatId, messageId,
+            "*Select items to trade:*\nTap an item to toggle it.",
+            Keyboards.itemSelect(state.inventory, state.selected)
+        )
+    end
+
+    local function handleQty(op, itemName, chatId, messageId, state)
+        if not state.tradeItems[itemName] then
+            state.tradeItems[itemName] = 1
+        end
+
+        if op == "inc" then
+            local maxQty = state.inventory[itemName] or math.huge
+            state.tradeItems[itemName] = math.min(state.tradeItems[itemName] + 1, maxQty)
+            TelegramAPI.editMessage(
+                token, chatId, messageId,
+                "*Set quantities for each item:*",
+                Keyboards.quantityEditor(state.tradeItems)
+            )
+
+        elseif op == "dec" then
+            state.tradeItems[itemName] = math.max(state.tradeItems[itemName] - 1, 1)
+            TelegramAPI.editMessage(
+                token, chatId, messageId,
+                "*Set quantities for each item:*",
+                Keyboards.quantityEditor(state.tradeItems)
+            )
+
+        elseif op == "set" then
+            state.awaitingInput = "qty:" .. itemName
+            state.lastMessageId = messageId
+            TelegramAPI.editMessage(
+                token, chatId, messageId,
+                "✏️ *Type the quantity for `" .. itemName .. "`:*\n_(Send as a chat message)_",
+                Keyboards.backOnly()
+            )
+        end
+    end
+
+    local function handleTextInput(text, chatId, state)
+        if not state.awaitingInput then return end
+
+        local input = state.awaitingInput
+        state.awaitingInput = nil
+
+        if input == "receiver" then
+            local name = text:match("^%s*(.-)%s*$")
+            if name and #name > 0 then
+                state.receiver = name
+                TelegramAPI.sendMessage(
+                    token, chatId,
+                    "✅ Receiver set to `" .. name .. "`",
+                    Keyboards.backOnly()
+                )
+            else
+                TelegramAPI.sendMessage(
+                    token, chatId,
+                    "❌ Invalid username. Please try again.",
+                    Keyboards.backOnly()
+                )
+            end
+
+        elseif input:sub(1, 4) == "qty:" then
+            local itemName = input:sub(5)
+            local qty      = tonumber(text:match("^%s*(%d+)%s*$"))
+
+            if qty and qty > 0 then
+                local maxQty = state.inventory[itemName] or math.huge
+                state.tradeItems[itemName] = math.min(qty, maxQty)
+                TelegramAPI.sendMessage(
+                    token, chatId,
+                    string.format("✅ `%s` quantity set to *%d*", itemName, state.tradeItems[itemName]),
+                    Keyboards.backOnly()
+                )
+            else
+                TelegramAPI.sendMessage(
+                    token, chatId,
+                    "❌ Invalid quantity. Enter a positive whole number.",
+                    Keyboards.backOnly()
+                )
+            end
+        end
+    end
+
+    -- --------------------------------------------------------
+    -- Public: process a single update object
+    -- --------------------------------------------------------
+    function MessageHandler.processUpdate(update, state)
+
+        if update.callback_query then
+            local cq     = update.callback_query
+            local fromId = cq.from and cq.from.id
+
+            if fromId ~= authId then
+                TelegramAPI.answerCallback(token, cq.id, "⛔ Unauthorized.")
+                return
+            end
+
+            local chatId    = cq.message and cq.message.chat and cq.message.chat.id
+            local messageId = cq.message and cq.message.message_id
+            local data      = cq.data or ""
+
+            TelegramAPI.answerCallback(token, cq.id)
+            state.chatId = chatId
+
+            if data:sub(1, 7) == "action:" then
+                handleAction(data:sub(8), chatId, messageId, state)
+
+            elseif data:sub(1, 7) == "toggle:" then
+                handleToggle(data:sub(8), chatId, messageId, state)
+
+            elseif data:sub(1, 4) == "qty:" then
+                local rest  = data:sub(5)
+                local colon = rest:find(":")
+                if colon then
+                    local op       = rest:sub(1, colon - 1)
+                    local itemName = rest:sub(colon + 1)
+                    handleQty(op, itemName, chatId, messageId, state)
+                end
+
+            elseif data == "noop" then
+                -- do nothing
+            end
+
+        elseif update.message then
+            local msg    = update.message
+            local fromId = msg.from and msg.from.id
+
+            if fromId ~= authId then return end
+
+            local chatId = msg.chat and msg.chat.id
+            local text   = msg.text or ""
+
+            state.chatId = chatId
+
+            if text == "/start" then
+                TradeState.reset()
+                local s = TradeState.get()
+                s.chatId = chatId
+                showMainMenu(chatId, s)
+                return
+            end
+
+            if state.awaitingInput then
+                handleTextInput(text, chatId, state)
+                return
+            end
+
+            TelegramAPI.sendMessage(
+                token, chatId,
+                "Send /start to open the Trade Manager menu.",
+                nil
+            )
+        end
+    end
+end
+
+-- ============================================================
+-- MODULE: Poller
+-- Long-polls Telegram for new updates and dispatches them.
+-- ============================================================
+local Poller = {}
+do
+    local offset = 0
+
+    function Poller.run()
+        local cfg, idx = Config.get()
+        local token    = cfg.token
+
+        TradeState.reset()
+        local state = TradeState.get()
+
+        print(("[Poller] Trade Manager started. Profile #%d | Roblox ID %d | Telegram ID %d")
+            :format(idx, cfg.robloxId, cfg.telegramId))
+        print("[Poller] Send /start to your bot to begin.")
+
+        local accumulator = 0
+
+        RunService.Heartbeat:Connect(function(dt)
+            accumulator = accumulator + dt
+            if accumulator < POLL_INTERVAL then return end
+            accumulator = 0
+
+            local updates = TelegramAPI.getUpdates(token, offset)
+            if not updates then return end
+
+            for _, update in ipairs(updates) do
+                offset = update.update_id + 1
+
+                local ok, err = pcall(MessageHandler.processUpdate, update, state)
+                if not ok then
+                    warn("[Poller] Error processing update: " .. tostring(err))
+                end
+            end
+        end)
+    end
+end
+
+-- ============================================================
+-- ENTRY POINT
+-- ============================================================
+Poller.run()
