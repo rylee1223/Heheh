@@ -1,1187 +1,552 @@
 --[[
-    ============================================================
-    Telegram Trade Manager — Enhanced Edition
-    LocalScript / Executor Script
-    ============================================================
-    Features:
-      • Auto-profile detection (Roblox UserId based)
-      • Single-message UI (edits ONE message, never spams)
-      • Live server player list for receiver selection
-      • Quick "Max All (100 cap)" quantity button
-      • Saved trades (JSON persistence via writefile/readfile)
-      • Export trade as JSON text / Load trade from JSON text
-      • Full trade workflow with inline keyboards
-      • PUBLIC ACCESS (Any Telegram user can control)
-      • AUTO-TRADE (Sends the same trade every 60 sec with a live timer)
-    ============================================================
---]]
+    Auto Cook Fish + Discord (Multi-player message editing)
+    - Unlocks FPS (fast as possible)
+    - INSTANTLY deletes "Spawned_Part" the exact millisecond it spawns
+    - Runs nil deletion every single frame (Heartbeat)
+    - Deletes "ant" models in workspace (without deleting the proximity prompt)
+    - Removed baseplate
+    - Walks to cook prompt & fires it at maximum engine speed
+    - Tracks Big_Fish & Golden_Fish
+]]
 
--- ============================================================
--- SERVICES
--- ============================================================
-local Players           = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local HttpService       = game:GetService("HttpService")
-local RunService        = game:GetService("RunService")
+--------------------------------------------------------------------------------
+-- FPS CAP (Unlocked for maximum speed)
+--------------------------------------------------------------------------------
+if setfpscap then
+    setfpscap(0) -- 0 unlocks the FPS to run as fast as possible
+    print("[AutoCook+D] FPS unlocked")
+else
+    warn("[AutoCook+D] setfpscap not found (executor missing this function)")
+end
 
--- ============================================================
--- CONSTANTS
--- ============================================================
-local POLL_INTERVAL    = 2
-local MAX_QTY_PER_ITEM = 100
-local SAVE_FILE        = "TradeManager_SavedTrades.json"
-
--- ============================================================
--- CONFIGURATION PROFILES (edit these)
--- ============================================================
-local PROFILES = {
-    [1] = {
-        token      = "8735581555:AAHO7_JgpSltftxAybj2rTsGATBhoWxRjhg",
-        robloxId   = 9222143452,
-        receiver   = "",
-    },
-    [2] = {
-        token      = "8416075322:AAEma18a64q296jW23c48BiyPj5fKjv2V2Q",
-        robloxId   = 11091903846,
-        receiver   = "",
-    },
-    [3] = {
-        token      = "8706242651:AAH1ULFav8igl-WaKs53ajYfCZ9VFpvB6Hs",
-        robloxId   = 11091901806,
-        receiver   = "",
-    },
-    [4] = {
-        token      = "8534741769:AAHziKpPSzjZY-WJQY2JRi2Ps89Tbyqr6nY",
-        robloxId   = 9019206562,
-        receiver   = "",
+--------------------------------------------------------------------------------
+-- DISCORD CONFIG
+--------------------------------------------------------------------------------
+local CONFIG = {
+    BOT_TOKEN = "GITHUB_PLACEHOLDER",   -- Replace with your real token
+    CHANNEL_ID = "1517885492258013184",
+    UPDATE_INTERVAL = 5,                 -- minutes between Discord updates
+    PLAYERS = {
+        {USERNAME = "Build3r_MAGIC2012",      MESSAGE_ID = "1518758643166875681"},
+        {USERNAME = "odtgPixelTiger",          MESSAGE_ID = "1518758669922336828"},
+        {USERNAME = "qak_HazeMoonHD5705",     MESSAGE_ID = "1518758690235224208"},
+        {USERNAME = "dimdam457secholder",      MESSAGE_ID = "1518758703824633916"},
     },
 }
 
--- ============================================================
--- MODULE: Config
--- ============================================================
-local Config = {}
-do
-    local cached, cachedIdx = nil, nil
+--------------------------------------------------------------------------------
+-- GAME CONFIG
+--------------------------------------------------------------------------------
+local PROMPT_PATH      = {"World Building", "Prompts", "CookFish", "Cook"}
+local AUTO_START_DELAY = 1
+local PROXIMITY_RADIUS = 5
+local TRACKED_ITEMS    = {"Big_Fish", "Golden_Fish"}
 
-    function Config.get()
-        if cached then return cached, cachedIdx end
+--------------------------------------------------------------------------------
+-- SERVICES
+--------------------------------------------------------------------------------
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService      = game:GetService("HttpService")
 
-        local localId = Players.LocalPlayer.UserId
+local player    = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local playerName = player.Name
 
-        for idx, profile in ipairs(PROFILES) do
-            if profile.robloxId == localId then
-                assert(type(profile.token) == "string" and #profile.token > 0,
-                    "[Config] Profile #" .. idx .. " token is missing.")
+-- Find my slot in CONFIG
+local mySlot = nil
+for _, slot in pairs(CONFIG.PLAYERS) do
+    if string.lower(slot.USERNAME) == string.lower(playerName) then
+        mySlot = slot
+        break
+    end
+end
+local linkedMessageId = mySlot and mySlot.MESSAGE_ID or nil
 
-                cached, cachedIdx = profile, idx
-                print(("[Config] Loaded profile #%d for Roblox ID %d")
-                    :format(idx, profile.robloxId))
-                return profile, idx
+--------------------------------------------------------------------------------
+-- STATE
+--------------------------------------------------------------------------------
+local isRunning         = false
+local wasRunning        = false
+local activationCount   = 0
+local cachedPrompt      = nil
+local walkConnection    = nil
+local fireConnection    = nil
+local startTime         = 0
+local lastDiscordUpdate = 0
+local trackedValues     = {}
+
+-- GUI references
+local statusLbl, counterLbl, bigFishLbl, goldenFishLbl, startBtn, stopBtn
+
+--------------------------------------------------------------------------------
+-- HELPER: INSTANTLY DELETE LAG MODELS (Event-Driven + Heartbeat Nil Loop)
+--------------------------------------------------------------------------------
+
+-- 1. INSTANT DELETION: Catches meshes the EXACT millisecond they spawn in workspace
+workspace.DescendantAdded:Connect(function(desc)
+    if desc:IsA("MeshPart") and desc.Name == "Spawned_Part" then
+        desc:Destroy()
+    elseif desc:IsA("Model") and string.lower(desc.Name) == "ant" then
+        -- Protect the proximity prompt from being deleted
+        if not desc:FindFirstChild("CookFish", true) then
+            desc:Destroy()
+        end
+    end
+end)
+
+-- Clean up any that already exist on script load
+for _, desc in ipairs(workspace:GetDescendants()) do
+    if desc:IsA("MeshPart") and desc.Name == "Spawned_Part" then
+        desc:Destroy()
+    elseif desc:IsA("Model") and string.lower(desc.Name) == "ant" then
+        if not desc:FindFirstChild("CookFish", true) then
+            desc:Destroy()
+        end
+    end
+end
+
+-- 2. HEARTBEAT NIL DELETION: Clears nil instances every single frame (fastest possible)
+RunService.Heartbeat:Connect(function()
+    for _, v in next, getnilinstances() do
+        if v.ClassName == "MeshPart" and v.Name == "Spawned_Part" then
+            v:Destroy()
+        elseif v.ClassName == "Model" and string.lower(v.Name) == "ant" then
+            if not v:FindFirstChild("CookFish", true) then
+                v:Destroy()
             end
         end
-
-        error("[Config] No profile found for Roblox UserId " .. localId)
     end
-end
+end)
 
--- ============================================================
--- MODULE: TelegramAPI
--- ============================================================
-local TelegramAPI = {}
-do
-    local BASE = "https://api.telegram.org/bot"
-
-    local httpRequest = (syn and syn.request)
-        or (http and http.request)
-        or http_request
-        or (fluxus and fluxus.request)
-        or request
-
-    assert(httpRequest, "[TelegramAPI] No HTTP request function found. "
-        .. "This script requires an executor with syn.request / http_request / request.")
-
-    local function post(token, method, payload)
-        local url  = BASE .. token .. "/" .. method
-        local body = HttpService:JSONEncode(payload)
-
-        local ok, response = pcall(httpRequest, {
-            Url     = url,
-            Method  = "POST",
-            Headers = {["Content-Type"] = "application/json"},
-            Body    = body,
-        })
-
-        if not ok or not response or not response.Body then
-            warn("[TelegramAPI] Request failed on '" .. method .. "'")
-            return nil
-        end
-
-        local decodeOk, decoded = pcall(HttpService.JSONDecode, HttpService, response.Body)
-        if not decodeOk then
-            warn("[TelegramAPI] JSON decode failed on '" .. method .. "'")
-            return nil
-        end
-
-        if not decoded.ok then
-            warn("[TelegramAPI] API error on '" .. method .. "': " .. tostring(decoded.description))
-            return nil
-        end
-
-        return decoded.result
-    end
-
-    function TelegramAPI.getUpdates(token, offset)
-        return post(token, "getUpdates", {
-            offset          = offset,
-            timeout         = 1,
-            allowed_updates = {"message", "callback_query"},
-        })
-    end
-
-    function TelegramAPI.sendMessage(token, chatId, text, replyMarkup, parseMode)
-        local payload = {
-            chat_id = chatId,
-            text    = text,
-        }
-        if parseMode then
-            payload.parse_mode = parseMode
-        end
-        if replyMarkup then
-            payload.reply_markup = replyMarkup
-        end
-        return post(token, "sendMessage", payload)
-    end
-
-    function TelegramAPI.editMessage(token, chatId, messageId, text, replyMarkup, parseMode)
-        local payload = {
-            chat_id    = chatId,
-            message_id = messageId,
-            text       = text,
-        }
-        if parseMode then
-            payload.parse_mode = parseMode
-        end
-        if replyMarkup then
-            payload.reply_markup = replyMarkup
-        end
-        return post(token, "editMessageText", payload)
-    end
-
-    function TelegramAPI.deleteMessage(token, chatId, messageId)
-        return post(token, "deleteMessage", {
-            chat_id    = chatId,
-            message_id = messageId,
-        })
-    end
-
-    function TelegramAPI.answerCallback(token, callbackId, text)
-        return post(token, "answerCallbackQuery", {
-            callback_query_id = callbackId,
-            text              = text or "",
-        })
-    end
-end
-
--- ============================================================
--- MODULE: Storage
--- ============================================================
-local Storage = {}
-do
-    local hasFileIO = (writefile and readfile and isfile) ~= nil
-
-    function Storage.load()
-        if not hasFileIO or not isfile(SAVE_FILE) then
-            return {}
-        end
-
-        local ok, contents = pcall(readfile, SAVE_FILE)
-        if not ok then return {} end
-
-        local decodeOk, data = pcall(HttpService.JSONDecode, HttpService, contents)
-        if not decodeOk or type(data) ~= "table" then
-            return {}
-        end
-
-        return data
-    end
-
-    function Storage.save(savedTrades)
-        if not hasFileIO then
-            warn("[Storage] File I/O not available; trades won't persist between sessions.")
-            return false
-        end
-
-        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, savedTrades)
-        if not ok then return false end
-
-        local writeOk = pcall(writefile, SAVE_FILE, encoded)
-        return writeOk
-    end
-
-    function Storage.available()
-        return hasFileIO
-    end
-end
-
--- ============================================================
--- MODULE: Inventory
--- ============================================================
-local Inventory = {}
-do
-    local LocalPlayer = Players.LocalPlayer
-
-    function Inventory.snapshot()
-        local inv = LocalPlayer.inventory
-        if not inv then return {} end
-
-        local snapshot = {}
-
-        if typeof(inv) == "table" then
-            for item, qty in pairs(inv) do
-                if type(item) == "string" and type(qty) == "number" then
-                    snapshot[item] = qty
+--------------------------------------------------------------------------------
+-- HELPERS
+--------------------------------------------------------------------------------
+local function findTrackedItems()
+    local inv = player:FindFirstChild("inventory")
+    if not inv then return end
+    for _, name in ipairs(TRACKED_ITEMS) do
+        local val = inv:FindFirstChild(name)
+        if val and val:IsA("IntValue") then
+            trackedValues[name] = val
+            val:GetPropertyChangedSignal("Value"):Connect(function()
+                if bigFishLbl and goldenFishLbl then
+                    bigFishLbl.Text = "Big Fish: " .. (trackedValues["Big_Fish"] and trackedValues["Big_Fish"].Value or "?")
+                    goldenFishLbl.Text = "Golden Fish: " .. (trackedValues["Golden_Fish"] and trackedValues["Golden_Fish"].Value or "?")
                 end
-            end
-        elseif typeof(inv) == "Instance" then
-            for _, child in ipairs(inv:GetChildren()) do
-                if child:IsA("NumberValue") or child:IsA("IntValue") then
-                    snapshot[child.Name] = child.Value
-                end
-            end
-        end
-
-        return snapshot
-    end
-
-    function Inventory.format(snapshot)
-        if not next(snapshot) then return "_Your inventory is empty._" end
-
-        local lines  = {"*Your Inventory:*", ""}
-        local sorted = {}
-        for name, qty in pairs(snapshot) do
-            table.insert(sorted, {name = name, qty = qty})
-        end
-        table.sort(sorted, function(a, b) return a.name < b.name end)
-
-        for _, entry in ipairs(sorted) do
-            table.insert(lines, string.format("• `%s` — x%d", entry.name, entry.qty))
-        end
-
-        return table.concat(lines, "\n")
-    end
-end
-
--- ============================================================
--- MODULE: ServerPlayers
--- ============================================================
-local ServerPlayers = {}
-do
-    function ServerPlayers.list()
-        local list = {}
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= Players.LocalPlayer then
-                table.insert(list, plr.Name)
-            end
-        end
-        table.sort(list)
-        return list
-    end
-end
-
--- ============================================================
--- MODULE: Keyboards
--- ============================================================
-local Keyboards = {}
-do
-    local function markup(rows) return {inline_keyboard = rows} end
-
-    function Keyboards.mainMenu(autoTradeEnabled)
-        local autoTradeBtnText = autoTradeEnabled and "🛑 Stop Auto Trade" or "🔄 Start Auto Trade"
-        return markup({
-            {
-                {text = "📦 View Inventory", callback_data = "action:viewInventory"},
-                {text = "🔄 Refresh",         callback_data = "action:refreshInventory"},
-            },
-            {
-                {text = "🛒 Select Items",    callback_data = "action:selectItems"},
-                {text = "🔢 Set Quantities",  callback_data = "action:setQuantities"},
-            },
-            {
-                {text = "👤 Select Receiver", callback_data = "action:selectReceiver"},
-                {text = "⚡ Quick Max (100)", callback_data = "action:quickMax"},
-            },
-            {
-                {text = "📋 Load JSON",      callback_data = "action:loadJson"},
-                {text = "💾 Export JSON",     callback_data = "action:exportJson"},
-            },
-            {
-                {text = "📂 Saved Trades",    callback_data = "action:savedTrades"},
-                {text = "📤 Send Trade",       callback_data = "action:sendTrade"},
-            },
-            {
-                {text = autoTradeBtnText, callback_data = "action:toggleAutoTrade"},
-            },
-        })
-    end
-
-    function Keyboards.itemSelect(snapshot, selected)
-        local rows, row, count = {}, {}, 0
-        local sorted = {}
-        for name in pairs(snapshot) do table.insert(sorted, name) end
-        table.sort(sorted)
-
-        for _, name in ipairs(sorted) do
-            local icon = selected[name] and "✅" or "⬜"
-            table.insert(row, {text = icon .. " " .. name, callback_data = "toggle:" .. name})
-            count = count + 1
-            if count % 2 == 0 then
-                table.insert(rows, row); row = {}
-            end
-        end
-        if #row > 0 then table.insert(rows, row) end
-
-        table.insert(rows, {
-            {text = "✅ Select All",  callback_data = "action:selectAll"},
-            {text = "❌ Clear All",   callback_data = "action:clearAll"},
-        })
-        table.insert(rows, {
-            {text = "✔️ Done",  callback_data = "action:mainMenu"},
-        })
-
-        return markup(rows)
-    end
-
-    function Keyboards.quantityEditor(tradeItems, inventory)
-        local rows   = {}
-        local sorted = {}
-        for name in pairs(tradeItems) do table.insert(sorted, name) end
-        table.sort(sorted)
-
-        for _, name in ipairs(sorted) do
-            local qty    = tradeItems[name]
-            local maxQty = math.min(inventory[name] or MAX_QTY_PER_ITEM, MAX_QTY_PER_ITEM)
-            table.insert(rows, {
-                {text = string.format("%s: %d / %d", name, qty, maxQty), callback_data = "noop"},
-            })
-            table.insert(rows, {
-                {text = "➖",     callback_data = "qty:dec:" .. name},
-                {text = "✏️ Set", callback_data = "qty:set:" .. name},
-                {text = "🔝 Max", callback_data = "qty:max:" .. name},
-                {text = "➕",     callback_data = "qty:inc:" .. name},
-            })
-        end
-
-        table.insert(rows, {
-            {text = "⚡ All Max",  callback_data = "action:quickMax"},
-            {text = "✔️ Done",    callback_data = "action:mainMenu"},
-        })
-
-        return markup(rows)
-    end
-
-    function Keyboards.receiverSelect(playerNames, currentReceiver)
-        local rows = {}
-        for _, name in ipairs(playerNames) do
-            local icon = (name == currentReceiver) and "✅ " or ""
-            table.insert(rows, {
-                {text = icon .. name, callback_data = "receiver:" .. name},
-            })
-        end
-
-        if #rows == 0 then
-            table.insert(rows, {{text = "(no other players in server)", callback_data = "noop"}})
-        end
-
-        table.insert(rows, {
-            {text = "🔄 Refresh",       callback_data = "action:selectReceiver"},
-            {text = "✏️ Type Manually", callback_data = "action:receiverManual"},
-        })
-        table.insert(rows, {
-            {text = "◀️ Back", callback_data = "action:mainMenu"},
-        })
-
-        return markup(rows)
-    end
-
-    function Keyboards.savedTrades(savedTrades)
-        local rows = {}
-        local sorted = {}
-        for name in pairs(savedTrades) do table.insert(sorted, name) end
-        table.sort(sorted)
-
-        for _, name in ipairs(sorted) do
-            table.insert(rows, {
-                {text = "📂 " .. name,    callback_data = "load:" .. name},
-                {text = "🗑️",             callback_data = "delete:" .. name},
-            })
-        end
-
-        if #rows == 0 then
-            table.insert(rows, {{text = "(no saved trades yet)", callback_data = "noop"}})
-        end
-
-        table.insert(rows, {
-            {text = "💾 Save Current",   callback_data = "action:saveCurrent"},
-            {text = "◀️ Back",          callback_data = "action:mainMenu"},
-        })
-
-        return markup(rows)
-    end
-
-    function Keyboards.jsonExport()
-        return markup({
-            {
-                {text = "📋 Load JSON",  callback_data = "action:loadJson"},
-                {text = "💾 Save to File", callback_data = "action:saveCurrent"},
-            },
-            {
-                {text = "◀️ Main Menu",  callback_data = "action:mainMenu"},
-            },
-        })
-    end
-
-    function Keyboards.backOnly()
-        return markup({{{text = "◀️ Main Menu", callback_data = "action:mainMenu"}}})
-    end
-
-    function Keyboards.confirmSend()
-        return markup({
-            {
-                {text = "✅ Confirm",  callback_data = "action:confirmSend"},
-                {text = "❌ Cancel",   callback_data = "action:mainMenu"},
-            },
-        })
-    end
-end
-
--- ============================================================
--- MODULE: TradeState
--- ============================================================
-local TradeState = {}
-do
-    TradeState._state = {}
-
-    function TradeState.get() return TradeState._state end
-
-    function TradeState.reset()
-        local profile = Config.get()
-        local s = TradeState._state
-        for k in pairs(s) do s[k] = nil end
-        -- Re-initialise
-        s.inventory     = {}
-        s.selected      = {}
-        s.tradeItems    = {}
-        s.receiver      = profile.receiver or nil
-        s.awaitingInput = nil
-        s.chatId        = nil
-        s.uiMessageId   = nil
-        s.savedTrades   = Storage.load()
-        
-        -- Auto Trade State
-        s.autoTradeEnabled   = false
-        s.autoTradeCountdown = 60
-        s.autoTradeInterval  = 60
-        s.lastTimerUpdate    = 0
-        s.currentScreen      = "mainMenu"
-    end
-end
-
--- ============================================================
--- MODULE: TradeExecutor
--- ============================================================
-local TradeExecutor = {}
-do
-    function TradeExecutor.send(state)
-        if not state.receiver or #state.receiver == 0 then
-            return false, "❌ No receiver set."
-        end
-
-        if not next(state.tradeItems) then
-            return false, "❌ No items selected."
-        end
-
-        local receiverPlayer = Players:FindFirstChild(state.receiver)
-        if not receiverPlayer then
-            return false, "❌ Player `" .. state.receiver .. "` is not in the server."
-        end
-
-        local itemsTable = {}
-        for name, qty in pairs(state.tradeItems) do
-            if qty > 0 then
-                itemsTable[name] = math.min(qty, MAX_QTY_PER_ITEM)
-            end
-        end
-
-        if not next(itemsTable) then
-            return false, "❌ All item quantities are zero."
-        end
-
-        local args = {
-            [1] = {
-                ["SenderContents"] = {
-                    ["Items"]    = itemsTable,
-                    ["Currency"] = {},
-                },
-                ["Receiver"] = receiverPlayer,
-                ["ReceiverContents"] = {
-                    ["Items"]    = {},
-                    ["Currency"] = {},
-                },
-            },
-        }
-
-        local ok, err = pcall(function()
-            ReplicatedStorage
-                .Remotes
-                :FindFirstChild("Trade System")
-                .SendTrade
-                :InvokeServer(unpack(args))
-        end)
-
-        if not ok then
-            return false, "❌ Remote error: `" .. tostring(err) .. "`"
-        end
-
-        return true, "✅ Trade sent to `" .. state.receiver .. "` successfully!"
-    end
-end
-
--- ============================================================
--- MODULE: UI
--- ============================================================
-local UI = {}
-do
-    local cfg   = Config.get()
-    local token = cfg.token
-
-    function UI.render(state, text, keyboard, noFormat)
-        if not state.chatId then return end
-
-        local pm = (not noFormat) and "Markdown" or nil
-
-        if state.uiMessageId then
-            local result = TelegramAPI.editMessage(
-                token, state.chatId, state.uiMessageId, text, keyboard, pm
-            )
-            if not result then
-                local newMsg = TelegramAPI.sendMessage(token, state.chatId, text, keyboard, pm)
-                if newMsg then state.uiMessageId = newMsg.message_id end
-            end
-        else
-            local newMsg = TelegramAPI.sendMessage(token, state.chatId, text, keyboard, pm)
-            if newMsg then state.uiMessageId = newMsg.message_id end
-        end
-    end
-
-    function UI.toast(callbackId, text)
-        TelegramAPI.answerCallback(token, callbackId, text)
-    end
-end
-
--- ============================================================
--- MODULE: Screens
--- ============================================================
-local Screens = {}
-do
-    local function countTable(t)
-        local n = 0
-        for _ in pairs(t) do n = n + 1 end
-        return n
-    end
-
-    function Screens.mainMenu(state)
-        state.currentScreen = "mainMenu"
-        
-        local itemCount = countTable(state.tradeItems)
-        local totalQty  = 0
-        for _, q in pairs(state.tradeItems) do totalQty = totalQty + q end
-
-        local autoTradeText = ""
-        if state.autoTradeEnabled then
-            autoTradeText = "\n🔄 Auto Trade: *ACTIVE* (Next in `" .. math.ceil(state.autoTradeCountdown) .. "s`)"
-        else
-            autoTradeText = "\n🔄 Auto Trade: *OFF*"
-        end
-
-        local text = table.concat({
-            "*🤖 Trade Manager*",
-            "",
-            "👤 Account: `" .. Players.LocalPlayer.Name .. "`",
-            "📥 Receiver: `" .. (state.receiver or "not set") .. "`",
-            "📦 Items: `" .. itemCount .. "` (total qty: `" .. totalQty .. "`)",
-            "💾 Saved trades: `" .. countTable(state.savedTrades) .. "`",
-            autoTradeText,
-        }, "\n")
-
-        UI.render(state, text, Keyboards.mainMenu(state.autoTradeEnabled))
-    end
-
-    function Screens.inventory(state)
-        state.currentScreen = "inventory"
-        state.inventory = Inventory.snapshot()
-        UI.render(state, Inventory.format(state.inventory), Keyboards.backOnly())
-    end
-
-    function Screens.selectItems(state)
-        state.currentScreen = "selectItems"
-        state.inventory = Inventory.snapshot()
-
-        if not next(state.inventory) then
-            UI.render(state, "⚠️ Your inventory is empty.", Keyboards.backOnly())
-            return
-        end
-
-        UI.render(state,
-            "*Select items to trade:*\nTap an item to toggle.",
-            Keyboards.itemSelect(state.inventory, state.selected)
-        )
-    end
-
-    function Screens.quantities(state)
-        state.currentScreen = "quantities"
-        if not next(state.tradeItems) then
-            UI.render(state,
-                "⚠️ No items selected. Use *Select Items* first.",
-                Keyboards.backOnly()
-            )
-            return
-        end
-
-        UI.render(state,
-            "*Set quantities* (max " .. MAX_QTY_PER_ITEM .. " per item):",
-            Keyboards.quantityEditor(state.tradeItems, state.inventory)
-        )
-    end
-
-    function Screens.receivers(state)
-        state.currentScreen = "receivers"
-        local list = ServerPlayers.list()
-        local text = "*Select a receiver:*\n_(" .. #list .. " other player(s) in server)_"
-        UI.render(state, text, Keyboards.receiverSelect(list, state.receiver))
-    end
-
-    function Screens.savedTrades(state)
-        state.currentScreen = "savedTrades"
-        local count = countTable(state.savedTrades)
-        local text  = "*💾 Saved Trades* (`" .. count .. "`)\n"
-
-        if not Storage.available() then
-            text = text .. "\n⚠️ _File I/O unavailable — saves won't persist between sessions._"
-        end
-
-        text = text .. "\n\nTap a name to load it, or 🗑️ to delete."
-
-        UI.render(state, text, Keyboards.savedTrades(state.savedTrades))
-    end
-
-    function Screens.confirmSend(state)
-        state.currentScreen = "confirmSend"
-        local lines = {"*📤 Confirm Trade*", ""}
-        table.insert(lines, "Receiver: `" .. (state.receiver or "not set") .. "`")
-        table.insert(lines, "Items:")
-
-        local sorted = {}
-        for name in pairs(state.tradeItems) do table.insert(sorted, name) end
-        table.sort(sorted)
-
-        for _, name in ipairs(sorted) do
-            table.insert(lines, string.format("  • `%s` × %d", name, state.tradeItems[name]))
-        end
-
-        table.insert(lines, "")
-        table.insert(lines, "_Confirm to send this trade._")
-
-        UI.render(state, table.concat(lines, "\n"), Keyboards.confirmSend())
-    end
-
-    function Screens.exportJson(state)
-        state.currentScreen = "exportJson"
-        if not next(state.tradeItems) then
-            UI.render(state, "⚠️ No items to export.\nSelect items first.", Keyboards.backOnly())
-            return
-        end
-
-        local exportData = {
-            items    = state.tradeItems,
-            receiver = state.receiver or "",
-        }
-
-        local ok, jsonStr = pcall(HttpService.JSONEncode, HttpService, exportData)
-        if not ok then
-            UI.render(state, "❌ Failed to encode JSON.", Keyboards.backOnly())
-            return
-        end
-
-        local displayText = "💾 Trade JSON — copy the text below:\n\n" .. jsonStr
-            .. "\n\n📋 Use 'Load JSON' and paste this text to restore the trade."
-
-        UI.render(state, displayText, Keyboards.jsonExport(), true)
-    end
-
-    function Screens.loadJsonPrompt(state)
-        state.currentScreen = "loadJsonPrompt"
-        state.awaitingInput = "loadJson"
-
-        local exampleJson = HttpService:JSONEncode({items = {Sword = 5, Shield = 10}, receiver = "PlayerName"})
-
-        local text = "📋 *Load Trade from JSON*\n\n"
-            .. "Paste your trade JSON as a chat message.\n\n"
-            .. "_Example format:_\n"
-            .. exampleJson
-
-        UI.render(state, text, Keyboards.backOnly())
-    end
-end
-
--- ============================================================
--- MODULE: MessageHandler
--- ============================================================
-local MessageHandler = {}
-do
-    local cfg    = Config.get()
-    local token  = cfg.token
-
-    local function handleAction(action, state, callbackId)
-
-        if action == "mainMenu" then
-            Screens.mainMenu(state)
-
-        elseif action == "viewInventory" or action == "refreshInventory" then
-            Screens.inventory(state)
-
-        elseif action == "selectItems" then
-            Screens.selectItems(state)
-
-        elseif action == "selectAll" then
-            state.inventory = Inventory.snapshot()
-            for name in pairs(state.inventory) do
-                state.selected[name] = true
-                if not state.tradeItems[name] then
-                    state.tradeItems[name] = 1
-                end
-            end
-            Screens.selectItems(state)
-            UI.toast(callbackId, "Selected all items")
-
-        elseif action == "clearAll" then
-            state.selected   = {}
-            state.tradeItems = {}
-            Screens.selectItems(state)
-            UI.toast(callbackId, "Cleared all")
-
-        elseif action == "setQuantities" then
-            for name in pairs(state.selected) do
-                if not state.tradeItems[name] then state.tradeItems[name] = 1 end
-            end
-            for name in pairs(state.tradeItems) do
-                if not state.selected[name] then state.tradeItems[name] = nil end
-            end
-            Screens.quantities(state)
-
-        elseif action == "quickMax" then
-            state.inventory = Inventory.snapshot()
-
-            if not next(state.selected) then
-                for name in pairs(state.inventory) do
-                    state.selected[name] = true
-                end
-            end
-
-            for name in pairs(state.selected) do
-                local invQty = state.inventory[name] or 0
-                state.tradeItems[name] = math.min(invQty, MAX_QTY_PER_ITEM)
-            end
-
-            Screens.quantities(state)
-            UI.toast(callbackId, "Set all to max (cap " .. MAX_QTY_PER_ITEM .. ")")
-
-        elseif action == "selectReceiver" then
-            Screens.receivers(state)
-
-        elseif action == "receiverManual" then
-            state.awaitingInput = "receiver"
-            UI.render(state,
-                "👤 *Type the exact Roblox username of the receiver:*\n_(Send as a chat message)_",
-                Keyboards.backOnly()
-            )
-
-        elseif action == "savedTrades" then
-            Screens.savedTrades(state)
-
-        elseif action == "saveCurrent" then
-            if not next(state.tradeItems) then
-                UI.toast(callbackId, "❌ Nothing to save")
-                return
-            end
-            state.awaitingInput = "saveName"
-            UI.render(state,
-                "💾 *Type a name for this saved trade:*\n_(Send as a chat message)_",
-                Keyboards.backOnly()
-            )
-
-        elseif action == "exportJson" then
-            Screens.exportJson(state)
-
-        elseif action == "loadJson" then
-            Screens.loadJsonPrompt(state)
-
-        elseif action == "sendTrade" then
-            if not next(state.tradeItems) then
-                UI.toast(callbackId, "❌ No items selected")
-                return
-            end
-            if not state.receiver then
-                UI.toast(callbackId, "❌ No receiver set")
-                return
-            end
-            Screens.confirmSend(state)
-
-        elseif action == "confirmSend" then
-            UI.render(state, "⏳ Sending trade...", nil)
-            local success, msg = TradeExecutor.send(state)
-
-            UI.render(state, msg .. "\n\nReturning to main menu...", nil)
-            wait(1.5)
-            Screens.mainMenu(state)
-            
-        -- =====================================================
-        -- AUTO TRADE TOGGLE
-        -- =====================================================
-        elseif action == "toggleAutoTrade" then
-            state.autoTradeEnabled = not state.autoTradeEnabled
-            if state.autoTradeEnabled then
-                if not state.receiver or not next(state.tradeItems) then
-                    state.autoTradeEnabled = false
-                    UI.toast(callbackId, "❌ Set items and receiver first!")
-                else
-                    state.autoTradeCountdown = state.autoTradeInterval
-                    state.lastTimerUpdate = tick()
-                    UI.toast(callbackId, "✅ Auto Trade Enabled!")
-                end
-            else
-                UI.toast(callbackId, "🛑 Auto Trade Disabled!")
-            end
-            Screens.mainMenu(state)
-        end
-    end
-
-    local function handleToggle(itemName, state)
-        if state.selected[itemName] then
-            state.selected[itemName] = nil
-            state.tradeItems[itemName] = nil
-        else
-            state.selected[itemName] = true
-            state.tradeItems[itemName] = state.tradeItems[itemName] or 1
-        end
-
-        UI.render(state,
-            "*Select items to trade:*\nTap an item to toggle.",
-            Keyboards.itemSelect(state.inventory, state.selected)
-        )
-    end
-
-    local function handleQty(op, itemName, state, callbackId)
-        if not state.tradeItems[itemName] then
-            state.tradeItems[itemName] = 1
-        end
-
-        local invMax  = state.inventory[itemName] or MAX_QTY_PER_ITEM
-        local hardMax = math.min(invMax, MAX_QTY_PER_ITEM)
-
-        if op == "inc" then
-            state.tradeItems[itemName] = math.min(state.tradeItems[itemName] + 1, hardMax)
-            Screens.quantities(state)
-
-        elseif op == "dec" then
-            state.tradeItems[itemName] = math.max(state.tradeItems[itemName] - 1, 1)
-            Screens.quantities(state)
-
-        elseif op == "max" then
-            state.tradeItems[itemName] = hardMax
-            Screens.quantities(state)
-            UI.toast(callbackId, "Set to " .. hardMax)
-
-        elseif op == "set" then
-            state.awaitingInput = "qty:" .. itemName
-            UI.render(state,
-                "✏️ *Type the quantity for `" .. itemName .. "`* (max " .. hardMax .. "):\n_(Send as a chat message)_",
-                Keyboards.backOnly()
-            )
-        end
-    end
-
-    local function handleReceiverPick(name, state, callbackId)
-        state.receiver = name
-        UI.toast(callbackId, "Receiver: " .. name)
-        Screens.mainMenu(state)
-    end
-
-    local function handleLoad(name, state, callbackId)
-        local trade = state.savedTrades[name]
-        if not trade then
-            UI.toast(callbackId, "❌ Not found")
-            return
-        end
-
-        state.tradeItems = {}
-        state.selected   = {}
-        for itemName, qty in pairs(trade.items or {}) do
-            state.tradeItems[itemName] = qty
-            state.selected[itemName]   = true
-        end
-
-        if trade.receiver and #trade.receiver > 0 then
-            state.receiver = trade.receiver
-        end
-
-        UI.toast(callbackId, "Loaded: " .. name)
-        Screens.mainMenu(state)
-    end
-
-    local function handleDelete(name, state, callbackId)
-        if state.savedTrades[name] then
-            state.savedTrades[name] = nil
-            Storage.save(state.savedTrades)
-            UI.toast(callbackId, "Deleted: " .. name)
-        end
-        Screens.savedTrades(state)
-    end
-
-    local function handleTextInput(text, state)
-        if not state.awaitingInput then return end
-
-        local input = state.awaitingInput
-        state.awaitingInput = nil
-
-        if input == "receiver" then
-            local name = text:match("^%s*(.-)%s*$")
-            if name and #name > 0 then
-                state.receiver = name
-            end
-            Screens.mainMenu(state)
-
-        elseif input == "saveName" then
-            local name = text:match("^%s*(.-)%s*$")
-            if not name or #name == 0 then
-                Screens.mainMenu(state)
-                return
-            end
-
-            local snapshot = {items = {}, receiver = state.receiver}
-            for k, v in pairs(state.tradeItems) do
-                snapshot.items[k] = v
-            end
-
-            state.savedTrades[name] = snapshot
-            Storage.save(state.savedTrades)
-            Screens.savedTrades(state)
-
-        elseif input == "loadJson" then
-            local cleaned = text:match("^%s*(.-)%s*$") or text
-            local decodeOk, data = pcall(HttpService.JSONDecode, HttpService, cleaned)
-
-            if not decodeOk or type(data) ~= "table" then
-                UI.render(state,
-                    "❌ *Invalid JSON.* Please paste valid JSON.\n\nTry again or go back.",
-                    Keyboards.backOnly()
-                )
-                state.awaitingInput = "loadJson"
-                return
-            end
-
-            state.tradeItems = {}
-            state.selected   = {}
-
-            if type(data.items) == "table" then
-                for itemName, qty in pairs(data.items) do
-                    if type(itemName) == "string" and type(qty) == "number" and qty > 0 then
-                        state.tradeItems[itemName] = math.min(qty, MAX_QTY_PER_ITEM)
-                        state.selected[itemName]   = true
-                    end
-                end
-            end
-
-            if type(data.receiver) == "string" and #data.receiver > 0 then
-                state.receiver = data.receiver
-            end
-
-            state.inventory = Inventory.snapshot()
-
-            local itemCount = 0
-            for _ in pairs(state.tradeItems) do itemCount = itemCount + 1 end
-
-            UI.render(state,
-                "✅ *Trade loaded from JSON!*\n\n"
-                .. "📦 " .. itemCount .. " item(s) loaded\n"
-                .. "📥 Receiver: `" .. (state.receiver or "not set") .. "`",
-                Keyboards.mainMenu(state.autoTradeEnabled)
-            )
-
-        elseif input:sub(1, 4) == "qty:" then
-            local itemName = input:sub(5)
-            local qty      = tonumber(text:match("^%s*(%d+)%s*$"))
-
-            if qty and qty > 0 then
-                local invMax  = state.inventory[itemName] or MAX_QTY_PER_ITEM
-                local hardMax = math.min(invMax, MAX_QTY_PER_ITEM)
-                state.tradeItems[itemName] = math.min(qty, hardMax)
-            end
-            Screens.quantities(state)
-        end
-    end
-
-    function MessageHandler.processUpdate(update, state)
-
-        if update.callback_query then
-            local cq     = update.callback_query
-
-            -- Removed authorization check: Any user can now interact via Telegram
-            
-            local chatId = cq.message and cq.message.chat and cq.message.chat.id
-            local data   = cq.data or ""
-
-            state.chatId      = chatId
-            state.uiMessageId = cq.message.message_id
-
-            TelegramAPI.answerCallback(token, cq.id)
-
-            if data:sub(1, 7) == "action:" then
-                handleAction(data:sub(8), state, cq.id)
-
-            elseif data:sub(1, 7) == "toggle:" then
-                handleToggle(data:sub(8), state)
-
-            elseif data:sub(1, 4) == "qty:" then
-                local rest  = data:sub(5)
-                local colon = rest:find(":")
-                if colon then
-                    local op       = rest:sub(1, colon - 1)
-                    local itemName = rest:sub(colon + 1)
-                    handleQty(op, itemName, state, cq.id)
-                end
-
-            elseif data:sub(1, 9) == "receiver:" then
-                handleReceiverPick(data:sub(10), state, cq.id)
-
-            elseif data:sub(1, 5) == "load:" then
-                handleLoad(data:sub(6), state, cq.id)
-
-            elseif data:sub(1, 7) == "delete:" then
-                handleDelete(data:sub(8), state, cq.id)
-
-            elseif data == "noop" then
-                -- do nothing
-            end
-
-        elseif update.message then
-            local msg    = update.message
-
-            -- Removed authorization check: Any user can now interact via Telegram
-
-            local chatId = msg.chat and msg.chat.id
-            local text   = msg.text or ""
-            state.chatId = chatId
-
-            if text == "/start" then
-                local savedMsgId  = state.uiMessageId
-                local savedChatId = state.chatId
-                TradeState.reset()
-                state.chatId      = savedChatId
-                state.uiMessageId = savedMsgId
-                Screens.mainMenu(state)
-                return
-            end
-
-            if state.awaitingInput then
-                handleTextInput(text, state)
-                return
-            end
-
-            if state.uiMessageId then
-                UI.render(state,
-                    "⚠️ Send /start to open the Trade Manager.",
-                    Keyboards.backOnly()
-                )
-            else
-                UI.render(state,
-                    "⚠️ Send /start to open the Trade Manager.",
-                    Keyboards.backOnly()
-                )
-            end
+            end)
         end
     end
 end
 
--- ============================================================
--- MODULE: Poller
--- ============================================================
-local Poller = {}
-do
-    local offset = 0
+local function getPrompt()
+    if cachedPrompt and cachedPrompt:IsDescendantOf(workspace) then return cachedPrompt end
+    cachedPrompt = nil
+    local current = workspace
+    for _, segment in ipairs(PROMPT_PATH) do
+        local child = current:FindFirstChild(segment)
+        if not child then return nil end
+        current = child
+    end
+    if not current:IsA("ProximityPrompt") then return nil end
+    cachedPrompt = current
+    return current
+end
 
-    function Poller.run()
-        local cfg, idx = Config.get()
-        local token    = cfg.token
+local function getPromptPosition(prompt)
+    local parent = prompt.Parent
+    if not parent then return nil end
+    local part = parent:IsA("BasePart") and parent or parent:FindFirstChildWhichIsA("BasePart", true)
+    return part and part.Position or nil
+end
 
-        TradeState.reset()
-        local state = TradeState.get()
-
-        print(("[Poller] Trade Manager started. Profile #%d | Roblox ID %d")
-            :format(idx, cfg.robloxId))
-        print("[Poller] Send /start to your bot to begin.")
-
-        local pollAccumulator = 0
-        
-        RunService.Heartbeat:Connect(function(dt)
-            -- 1. Auto Trade Logic
-            if state.autoTradeEnabled then
-                state.autoTradeCountdown = state.autoTradeCountdown - dt
-                
-                if state.autoTradeCountdown <= 0 then
-                    state.autoTradeCountdown = state.autoTradeInterval
-                    
-                    -- Force send trade
-                    if state.receiver and next(state.tradeItems) then
-                        local success, msg = TradeExecutor.send(state)
-                        state.currentScreen = "mainMenu"
-                        Screens.mainMenu(state)
-                    else
-                        -- Safety: Turn off auto trade if setup becomes invalid
-                        state.autoTradeEnabled = false
-                        state.currentScreen = "mainMenu"
-                        Screens.mainMenu(state)
-                    end
-                    
-                -- Update Timer on Main Menu UI every ~1 second
-                elseif state.currentScreen == "mainMenu" then
-                    if tick() - state.lastTimerUpdate >= 1 and state.uiMessageId then
-                        state.lastTimerUpdate = tick()
-                        Screens.mainMenu(state)
-                    end
-                end
-            end
-
-            -- 2. Polling Logic
-            pollAccumulator = pollAccumulator + dt
-            if pollAccumulator < POLL_INTERVAL then return end
-            pollAccumulator = 0
-
-            local updates = TelegramAPI.getUpdates(token, offset)
-            if not updates then return end
-
-            for _, update in ipairs(updates) do
-                offset = update.update_id + 1
-                local ok, err = pcall(MessageHandler.processUpdate, update, state)
-                if not ok then
-                    warn("[Poller] Error processing update: " .. tostring(err))
-                end
-            end
+local function firePrompt(prompt)
+    if not prompt then return end
+    -- Set hold duration to 0 to bypass any hold time
+    prompt.HoldDuration = 0
+    
+    -- Use the correct exploit global to fire the proximity prompt instantly
+    if fireproximityprompt then
+        fireproximityprompt(prompt)
+    else
+        -- Fallback for executors that use the method instead
+        pcall(function() 
+            prompt:InputHoldBegin() 
+            prompt:InputHoldEnd() 
         end)
     end
 end
 
--- ============================================================
--- ENTRY POINT
--- ============================================================
-Poller.run()
+--------------------------------------------------------------------------------
+-- DISCORD (using the case farmer's style)
+--------------------------------------------------------------------------------
+local function updateDiscordMessage()
+    if CONFIG.BOT_TOKEN == "" or CONFIG.BOT_TOKEN == "GITHUB_PLACEHOLDER" then return end
+    if not mySlot or not linkedMessageId then return end
+
+    local now = tick()
+    if now - lastDiscordUpdate < (CONFIG.UPDATE_INTERVAL * 60) then return end
+    lastDiscordUpdate = now
+
+    local bigCount = trackedValues["Big_Fish"] and trackedValues["Big_Fish"].Value or 0
+    local goldenCount = trackedValues["Golden_Fish"] and trackedValues["Golden_Fish"].Value or 0
+    local uptime = os.date("!%H:%M:%S", tick() - startTime)
+
+    local embed = {
+        title = "🐟 Auto Cook – " .. playerName,
+        color = 3447003,
+        fields = {
+            { name = "Status",         value = isRunning and "✅ Running" or "⏸️ Idle",        inline = true },
+            { name = "Activations",    value = "```"..tostring(activationCount).."```",        inline = true },
+            { name = "Big Fish",       value = "```"..tostring(bigCount).."```",               inline = true },
+            { name = "Golden Fish",    value = "```"..tostring(goldenCount).."```",            inline = true },
+            { name = "Uptime",         value = "```"..uptime.."```",                           inline = true },
+        },
+        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        footer = { text = "Slot " .. tostring(mySlot) .. " • Updates every " .. CONFIG.UPDATE_INTERVAL .. " min" },
+        thumbnail = { url = "https://www.roblox.com/headshot-thumbnail/image?userId="..player.UserId.."&width=420&height=420&format=png" }
+    }
+
+    local body = { content = " ", embeds = { embed } }
+    local req = (syn and syn.request) or (http and http.request) or http_request or request
+    if not req then return end
+
+    pcall(function()
+        req({
+            Url = "https://discord.com/api/v10/channels/" .. CONFIG.CHANNEL_ID .. "/messages/" .. linkedMessageId,
+            Method = "PATCH",
+            Headers = {
+                ["Authorization"] = "Bot " .. CONFIG.BOT_TOKEN,
+                ["Content-Type"] = "application/json"
+            },
+            Body = HttpService:JSONEncode(body)
+        })
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- START / STOP
+--------------------------------------------------------------------------------
+local function stopAutoActivate(updateGui)
+    isRunning = false
+    if walkConnection then walkConnection:Disconnect(); walkConnection = nil end
+    if fireConnection then fireConnection:Disconnect(); fireConnection = nil end
+    if updateGui ~= false and startBtn and stopBtn then
+        startBtn.AutoButtonColor = true
+        startBtn.BackgroundTransparency = 0
+        startBtn.TextTransparency = 0
+        stopBtn.AutoButtonColor = false
+        stopBtn.BackgroundTransparency = 0.45
+        stopBtn.TextTransparency = 0.4
+    end
+    if statusLbl then
+        statusLbl.Text = "Status: Idle"
+        statusLbl.TextColor3 = Color3.fromRGB(200,200,200)
+    end
+end
+
+local function startAutoActivate(prompt)
+    if isRunning then return end
+    local character = player.Character
+    if not character then return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+    local promptPos = getPromptPosition(prompt)
+    if not promptPos then return end
+
+    isRunning = true
+    startTime = tick()
+    activationCount = 0
+
+    if statusLbl then
+        statusLbl.Text = "Status: Moving & Cooking..."
+        statusLbl.TextColor3 = Color3.fromRGB(80,255,80)
+    end
+    if startBtn and stopBtn then
+        startBtn.AutoButtonColor = false
+        startBtn.BackgroundTransparency = 0.45
+        startBtn.TextTransparency = 0.4
+        stopBtn.AutoButtonColor = true
+        stopBtn.BackgroundTransparency = 0
+        stopBtn.TextTransparency = 0
+    end
+
+    -- Walk using Humanoid:MoveTo
+    local function walkToTarget()
+        if not isRunning then return end
+        local char = player.Character
+        if not char then return end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+        local dist = (root.Position - promptPos).Magnitude
+        if dist > PROXIMITY_RADIUS then
+            hum:MoveTo(promptPos)
+        else
+            hum:MoveTo(root.Position) -- stop moving
+        end
+    end
+
+    walkConnection = RunService.Heartbeat:Connect(walkToTarget)
+
+    -- Fire prompt EVERY FRAME (Fastest possible speed)
+    fireConnection = RunService.Heartbeat:Connect(function()
+        if not isRunning then return end
+        firePrompt(prompt)
+        activationCount = activationCount + 1
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- GUI
+--------------------------------------------------------------------------------
+local function createGUI()
+    local old = playerGui:FindFirstChild("AutoCookFishGUI")
+    if old then old:Destroy() end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "AutoCookFishGUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.Parent = playerGui
+
+    local main = Instance.new("Frame")
+    main.Size = UDim2.new(0, 280, 0, 210)
+    main.Position = UDim2.new(0.02, 0, 0.35, 0)
+    main.BackgroundColor3 = Color3.fromRGB(30,30,30)
+    main.BackgroundTransparency = 0.08
+    main.BorderSizePixel = 0
+    main.Parent = screenGui
+    Instance.new("UICorner", main).CornerRadius = UDim.new(0,10)
+    Instance.new("UIStroke", main).Color = Color3.fromRGB(80,80,80)
+
+    local titleBar = Instance.new("Frame")
+    titleBar.Size = UDim2.new(1,0,0,30)
+    titleBar.BackgroundColor3 = Color3.fromRGB(20,20,20)
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = main
+    Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0,10)
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1,-12,1,0)
+    titleLabel.Position = UDim2.new(0,12,0,0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = "🐟 Auto Cook + Discord"
+    titleLabel.TextColor3 = Color3.fromRGB(240,240,240)
+    titleLabel.TextSize = 14
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Parent = titleBar
+
+    local sLbl = Instance.new("TextLabel")
+    sLbl.Size = UDim2.new(1,-12,0,20)
+    sLbl.Position = UDim2.new(0,6,0,36)
+    sLbl.BackgroundTransparency = 1
+    sLbl.Text = "Status: Idle"
+    sLbl.TextColor3 = Color3.fromRGB(200,200,200)
+    sLbl.TextSize = 12
+    sLbl.Font = Enum.Font.GothamMedium
+    sLbl.TextXAlignment = Enum.TextXAlignment.Left
+    sLbl.Parent = main
+
+    local cLbl = Instance.new("TextLabel")
+    cLbl.Size = UDim2.new(1,-12,0,18)
+    cLbl.Position = UDim2.new(0,6,0,58)
+    cLbl.BackgroundTransparency = 1
+    cLbl.Text = "Activations: 0"
+    cLbl.TextColor3 = Color3.fromRGB(180,180,180)
+    cLbl.TextSize = 11
+    cLbl.Font = Enum.Font.Gotham
+    cLbl.TextXAlignment = Enum.TextXAlignment.Left
+    cLbl.Parent = main
+
+    local bLbl = Instance.new("TextLabel")
+    bLbl.Size = UDim2.new(1,-12,0,18)
+    bLbl.Position = UDim2.new(0,6,0,80)
+    bLbl.BackgroundTransparency = 1
+    bLbl.Text = "Big Fish: ?"
+    bLbl.TextColor3 = Color3.fromRGB(130,200,255)
+    bLbl.TextSize = 11
+    bLbl.Font = Enum.Font.Gotham
+    bLbl.TextXAlignment = Enum.TextXAlignment.Left
+    bLbl.Parent = main
+
+    local gLbl = Instance.new("TextLabel")
+    gLbl.Size = UDim2.new(1,-12,0,18)
+    gLbl.Position = UDim2.new(0,6,0,100)
+    gLbl.BackgroundTransparency = 1
+    gLbl.Text = "Golden Fish: ?"
+    gLbl.TextColor3 = Color3.fromRGB(255,215,0)
+    gLbl.TextSize = 11
+    gLbl.Font = Enum.Font.Gotham
+    gLbl.TextXAlignment = Enum.TextXAlignment.Left
+    gLbl.Parent = main
+
+    local buttonRow = Instance.new("Frame")
+    buttonRow.Size = UDim2.new(1,-12,0,34)
+    buttonRow.Position = UDim2.new(0,6,0,126)
+    buttonRow.BackgroundTransparency = 1
+    buttonRow.Parent = main
+
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Horizontal
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    layout.Padding = UDim.new(0,12)
+    layout.Parent = buttonRow
+
+    local function makeButton(text, color)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0,110,0,30)
+        btn.BackgroundColor3 = color
+        btn.TextColor3 = Color3.fromRGB(255,255,255)
+        btn.Text = text
+        btn.TextSize = 13
+        btn.Font = Enum.Font.GothamBold
+        btn.BorderSizePixel = 0
+        btn.Parent = buttonRow
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0,6)
+        return btn
+    end
+
+    local sBtn = makeButton("▶ Start", Color3.fromRGB(45,160,45))
+    local stpBtn = makeButton("■ Stop", Color3.fromRGB(180,45,45))
+
+    -- Drag
+    local dragging, dragStart, startPos
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = main.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - dragStart
+            main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+
+    return screenGui, sBtn, stpBtn, sLbl, cLbl, bLbl, gLbl
+end
+
+--------------------------------------------------------------------------------
+-- INIT
+--------------------------------------------------------------------------------
+gui, startBtn, stopBtn, statusLbl, counterLbl, bigFishLbl, goldenFishLbl = createGUI()
+findTrackedItems()
+
+startBtn.MouseButton1Click:Connect(function()
+    if isRunning then return end
+    wasRunning = true
+    local prompt = getPrompt()
+    if not prompt then
+        statusLbl.Text = "Status: Prompt not found!"
+        statusLbl.TextColor3 = Color3.fromRGB(255,80,80)
+        return
+    end
+    startAutoActivate(prompt)
+end)
+
+stopBtn.MouseButton1Click:Connect(function()
+    wasRunning = false
+    stopAutoActivate()
+    counterLbl.Text = "Activations: " .. tostring(activationCount)
+end)
+
+player.CharacterRemoving:Connect(function()
+    stopAutoActivate(false)
+    if statusLbl then statusLbl.Text = "Status: Respawning..." end
+end)
+
+player.CharacterAdded:Connect(function(char)
+    task.wait(1)
+    findTrackedItems()
+    if wasRunning then
+        local prompt = getPrompt()
+        if prompt then
+            startAutoActivate(prompt)
+        else
+            statusLbl.Text = "Status: Prompt not found!"
+            statusLbl.TextColor3 = Color3.fromRGB(255,80,80)
+            wasRunning = false
+        end
+    end
+end)
+
+task.spawn(function()
+    while gui and gui.Parent do
+        if isRunning then
+            counterLbl.Text = "Activations: " .. tostring(activationCount)
+        end
+        if bigFishLbl and goldenFishLbl then
+            local b = trackedValues["Big_Fish"] and trackedValues["Big_Fish"].Value
+            local g = trackedValues["Golden_Fish"] and trackedValues["Golden_Fish"].Value
+            bigFishLbl.Text = "Big Fish: " .. (b or "?")
+            goldenFishLbl.Text = "Golden Fish: " .. (g or "?")
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- Discord update loop
+if CONFIG.BOT_TOKEN ~= "" and CONFIG.BOT_TOKEN ~= "GITHUB_PLACEHOLDER" then
+    task.spawn(function()
+        while gui and gui.Parent do
+            if isRunning then updateDiscordMessage() end
+            task.wait(60)
+        end
+    end)
+end
+
+-- Auto start
+task.delay(AUTO_START_DELAY, function()
+    if isRunning then return end
+    local prompt = getPrompt()
+    if not prompt then
+        statusLbl.Text = "Status: Prompt not found!"
+        statusLbl.TextColor3 = Color3.fromRGB(255,80,80)
+        return
+    end
+    wasRunning = true
+    startAutoActivate(prompt)
+end)
+
+gui.AncestryChanged:Connect(function()
+    if not gui:IsDescendantOf(game) then
+        stopAutoActivate(false)
+    end
+end)
+
+print("[AutoCook+D] Loaded – FPS Unlocked, Instant Mesh Deletion, Remote Fixed")
+
+task.wait(10)
+local Players = game:GetService("Players")
+local VirtualUser = game:GetService("VirtualUser")
+local LocalPlayer = Players.LocalPlayer
+
+-- Send a notification so you know it's running
+pcall(function()
+    game.StarterGui:SetCore("SendNotification", {
+        Title = "Anti-AFK Active",
+        Text = "You will no longer be kicked for idling.",
+        Duration = 5
+    })
+end)
+
+print("[Universal Anti-AFK] Loaded successfully.")
+
+-- Catch the idle event and simulate input to reset the timer
+LocalPlayer.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new())
+    print("[Universal Anti-AFK] Simulated input to prevent kick.")
+end)
