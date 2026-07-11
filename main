@@ -11,6 +11,8 @@
       • Saved trades (JSON persistence via writefile/readfile)
       • Export trade as JSON text / Load trade from JSON text
       • Full trade workflow with inline keyboards
+      • PUBLIC ACCESS (Any Telegram user can control)
+      • AUTO-TRADE (Sends the same trade every 60 sec with a live timer)
     ============================================================
 --]]
 
@@ -35,25 +37,21 @@ local SAVE_FILE        = "TradeManager_SavedTrades.json"
 local PROFILES = {
     [1] = {
         token      = "8735581555:AAHO7_JgpSltftxAybj2rTsGATBhoWxRjhg",
-        telegramId = 6718137076,
         robloxId   = 9222143452,
         receiver   = "",
     },
     [2] = {
         token      = "8416075322:AAEma18a64q296jW23c48BiyPj5fKjv2V2Q",
-        telegramId = 6718137076,
         robloxId   = 11091903846,
         receiver   = "",
     },
     [3] = {
         token      = "8706242651:AAH1ULFav8igl-WaKs53ajYfCZ9VFpvB6Hs",
-        telegramId = 6718137076,
         robloxId   = 11091901806,
         receiver   = "",
     },
     [4] = {
         token      = "8534741769:AAHziKpPSzjZY-WJQY2JRi2Ps89Tbyqr6nY",
-        telegramId = 6718137076,
         robloxId   = 9019206562,
         receiver   = "",
     },
@@ -75,12 +73,10 @@ do
             if profile.robloxId == localId then
                 assert(type(profile.token) == "string" and #profile.token > 0,
                     "[Config] Profile #" .. idx .. " token is missing.")
-                assert(type(profile.telegramId) == "number",
-                    "[Config] Profile #" .. idx .. " telegramId must be a number.")
 
                 cached, cachedIdx = profile, idx
-                print(("[Config] Loaded profile #%d for Roblox ID %d (Telegram ID %d)")
-                    :format(idx, profile.robloxId, profile.telegramId))
+                print(("[Config] Loaded profile #%d for Roblox ID %d")
+                    :format(idx, profile.robloxId))
                 return profile, idx
             end
         end
@@ -300,7 +296,8 @@ local Keyboards = {}
 do
     local function markup(rows) return {inline_keyboard = rows} end
 
-    function Keyboards.mainMenu()
+    function Keyboards.mainMenu(autoTradeEnabled)
+        local autoTradeBtnText = autoTradeEnabled and "🛑 Stop Auto Trade" or "🔄 Start Auto Trade"
         return markup({
             {
                 {text = "📦 View Inventory", callback_data = "action:viewInventory"},
@@ -321,6 +318,9 @@ do
             {
                 {text = "📂 Saved Trades",    callback_data = "action:savedTrades"},
                 {text = "📤 Send Trade",       callback_data = "action:sendTrade"},
+            },
+            {
+                {text = autoTradeBtnText, callback_data = "action:toggleAutoTrade"},
             },
         })
     end
@@ -457,7 +457,6 @@ end
 
 -- ============================================================
 -- MODULE: TradeState
--- Modifies table in-place so the Poller's reference stays valid.
 -- ============================================================
 local TradeState = {}
 do
@@ -468,7 +467,6 @@ do
     function TradeState.reset()
         local profile = Config.get()
         local s = TradeState._state
-        -- Clear existing keys (preserves table reference for Poller)
         for k in pairs(s) do s[k] = nil end
         -- Re-initialise
         s.inventory     = {}
@@ -479,6 +477,13 @@ do
         s.chatId        = nil
         s.uiMessageId   = nil
         s.savedTrades   = Storage.load()
+        
+        -- Auto Trade State
+        s.autoTradeEnabled   = false
+        s.autoTradeCountdown = 60
+        s.autoTradeInterval  = 60
+        s.lastTimerUpdate    = 0
+        s.currentScreen      = "mainMenu"
     end
 end
 
@@ -544,9 +549,6 @@ end
 
 -- ============================================================
 -- MODULE: UI
--- Single-message UI helper.
--- noFormat = true  → sends without parse_mode (raw text, safe for JSON)
--- noFormat = false/nil → uses Markdown
 -- ============================================================
 local UI = {}
 do
@@ -589,9 +591,18 @@ do
     end
 
     function Screens.mainMenu(state)
+        state.currentScreen = "mainMenu"
+        
         local itemCount = countTable(state.tradeItems)
         local totalQty  = 0
         for _, q in pairs(state.tradeItems) do totalQty = totalQty + q end
+
+        local autoTradeText = ""
+        if state.autoTradeEnabled then
+            autoTradeText = "\n🔄 Auto Trade: *ACTIVE* (Next in `" .. math.ceil(state.autoTradeCountdown) .. "s`)"
+        else
+            autoTradeText = "\n🔄 Auto Trade: *OFF*"
+        end
 
         local text = table.concat({
             "*🤖 Trade Manager*",
@@ -600,17 +611,20 @@ do
             "📥 Receiver: `" .. (state.receiver or "not set") .. "`",
             "📦 Items: `" .. itemCount .. "` (total qty: `" .. totalQty .. "`)",
             "💾 Saved trades: `" .. countTable(state.savedTrades) .. "`",
+            autoTradeText,
         }, "\n")
 
-        UI.render(state, text, Keyboards.mainMenu())
+        UI.render(state, text, Keyboards.mainMenu(state.autoTradeEnabled))
     end
 
     function Screens.inventory(state)
+        state.currentScreen = "inventory"
         state.inventory = Inventory.snapshot()
         UI.render(state, Inventory.format(state.inventory), Keyboards.backOnly())
     end
 
     function Screens.selectItems(state)
+        state.currentScreen = "selectItems"
         state.inventory = Inventory.snapshot()
 
         if not next(state.inventory) then
@@ -625,6 +639,7 @@ do
     end
 
     function Screens.quantities(state)
+        state.currentScreen = "quantities"
         if not next(state.tradeItems) then
             UI.render(state,
                 "⚠️ No items selected. Use *Select Items* first.",
@@ -640,12 +655,14 @@ do
     end
 
     function Screens.receivers(state)
+        state.currentScreen = "receivers"
         local list = ServerPlayers.list()
         local text = "*Select a receiver:*\n_(" .. #list .. " other player(s) in server)_"
         UI.render(state, text, Keyboards.receiverSelect(list, state.receiver))
     end
 
     function Screens.savedTrades(state)
+        state.currentScreen = "savedTrades"
         local count = countTable(state.savedTrades)
         local text  = "*💾 Saved Trades* (`" .. count .. "`)\n"
 
@@ -659,6 +676,7 @@ do
     end
 
     function Screens.confirmSend(state)
+        state.currentScreen = "confirmSend"
         local lines = {"*📤 Confirm Trade*", ""}
         table.insert(lines, "Receiver: `" .. (state.receiver or "not set") .. "`")
         table.insert(lines, "Items:")
@@ -677,10 +695,8 @@ do
         UI.render(state, table.concat(lines, "\n"), Keyboards.confirmSend())
     end
 
-    -- -------------------------------------------------------
-    -- NEW: Export current trade as JSON text
-    -- -------------------------------------------------------
     function Screens.exportJson(state)
+        state.currentScreen = "exportJson"
         if not next(state.tradeItems) then
             UI.render(state, "⚠️ No items to export.\nSelect items first.", Keyboards.backOnly())
             return
@@ -697,17 +713,14 @@ do
             return
         end
 
-        -- Send as plain text (no Markdown) so JSON is safe to copy
         local displayText = "💾 Trade JSON — copy the text below:\n\n" .. jsonStr
             .. "\n\n📋 Use 'Load JSON' and paste this text to restore the trade."
 
-        UI.render(state, displayText, Keyboards.jsonExport(), true)  -- true = noFormat
+        UI.render(state, displayText, Keyboards.jsonExport(), true)
     end
 
-    -- -------------------------------------------------------
-    -- NEW: Prompt user to paste JSON
-    -- -------------------------------------------------------
     function Screens.loadJsonPrompt(state)
+        state.currentScreen = "loadJsonPrompt"
         state.awaitingInput = "loadJson"
 
         local exampleJson = HttpService:JSONEncode({items = {Sword = 5, Shield = 10}, receiver = "PlayerName"})
@@ -728,11 +741,7 @@ local MessageHandler = {}
 do
     local cfg    = Config.get()
     local token  = cfg.token
-    local authId = cfg.telegramId
 
-    -- --------------------------------------------------------
-    -- Action dispatcher
-    -- --------------------------------------------------------
     local function handleAction(action, state, callbackId)
 
         if action == "mainMenu" then
@@ -811,15 +820,9 @@ do
                 Keyboards.backOnly()
             )
 
-        -- =====================================================
-        -- NEW: Export JSON
-        -- =====================================================
         elseif action == "exportJson" then
             Screens.exportJson(state)
 
-        -- =====================================================
-        -- NEW: Load JSON prompt
-        -- =====================================================
         elseif action == "loadJson" then
             Screens.loadJsonPrompt(state)
 
@@ -838,16 +841,31 @@ do
             UI.render(state, "⏳ Sending trade...", nil)
             local success, msg = TradeExecutor.send(state)
 
-            -- Show result in same message, then return to menu
             UI.render(state, msg .. "\n\nReturning to main menu...", nil)
             wait(1.5)
+            Screens.mainMenu(state)
+            
+        -- =====================================================
+        -- AUTO TRADE TOGGLE
+        -- =====================================================
+        elseif action == "toggleAutoTrade" then
+            state.autoTradeEnabled = not state.autoTradeEnabled
+            if state.autoTradeEnabled then
+                if not state.receiver or not next(state.tradeItems) then
+                    state.autoTradeEnabled = false
+                    UI.toast(callbackId, "❌ Set items and receiver first!")
+                else
+                    state.autoTradeCountdown = state.autoTradeInterval
+                    state.lastTimerUpdate = tick()
+                    UI.toast(callbackId, "✅ Auto Trade Enabled!")
+                end
+            else
+                UI.toast(callbackId, "🛑 Auto Trade Disabled!")
+            end
             Screens.mainMenu(state)
         end
     end
 
-    -- --------------------------------------------------------
-    -- Toggle item selection
-    -- --------------------------------------------------------
     local function handleToggle(itemName, state)
         if state.selected[itemName] then
             state.selected[itemName] = nil
@@ -863,9 +881,6 @@ do
         )
     end
 
-    -- --------------------------------------------------------
-    -- Quantity buttons
-    -- --------------------------------------------------------
     local function handleQty(op, itemName, state, callbackId)
         if not state.tradeItems[itemName] then
             state.tradeItems[itemName] = 1
@@ -896,18 +911,12 @@ do
         end
     end
 
-    -- --------------------------------------------------------
-    -- Receiver select from list
-    -- --------------------------------------------------------
     local function handleReceiverPick(name, state, callbackId)
         state.receiver = name
         UI.toast(callbackId, "Receiver: " .. name)
         Screens.mainMenu(state)
     end
 
-    -- --------------------------------------------------------
-    -- Saved trade load / delete
-    -- --------------------------------------------------------
     local function handleLoad(name, state, callbackId)
         local trade = state.savedTrades[name]
         if not trade then
@@ -939,9 +948,6 @@ do
         Screens.savedTrades(state)
     end
 
-    -- --------------------------------------------------------
-    -- Text input handler (typed chat messages)
-    -- --------------------------------------------------------
     local function handleTextInput(text, state)
         if not state.awaitingInput then return end
 
@@ -971,9 +977,6 @@ do
             Storage.save(state.savedTrades)
             Screens.savedTrades(state)
 
-        -- =====================================================
-        -- NEW: Load trade from pasted JSON text
-        -- =====================================================
         elseif input == "loadJson" then
             local cleaned = text:match("^%s*(.-)%s*$") or text
             local decodeOk, data = pcall(HttpService.JSONDecode, HttpService, cleaned)
@@ -983,16 +986,13 @@ do
                     "❌ *Invalid JSON.* Please paste valid JSON.\n\nTry again or go back.",
                     Keyboards.backOnly()
                 )
-                -- Re-enable awaiting so they can retry
                 state.awaitingInput = "loadJson"
                 return
             end
 
-            -- Clear current trade
             state.tradeItems = {}
             state.selected   = {}
 
-            -- Load items
             if type(data.items) == "table" then
                 for itemName, qty in pairs(data.items) do
                     if type(itemName) == "string" and type(qty) == "number" and qty > 0 then
@@ -1002,12 +1002,10 @@ do
                 end
             end
 
-            -- Load receiver
             if type(data.receiver) == "string" and #data.receiver > 0 then
                 state.receiver = data.receiver
             end
 
-            -- Update inventory snapshot for quantity editing
             state.inventory = Inventory.snapshot()
 
             local itemCount = 0
@@ -1017,7 +1015,7 @@ do
                 "✅ *Trade loaded from JSON!*\n\n"
                 .. "📦 " .. itemCount .. " item(s) loaded\n"
                 .. "📥 Receiver: `" .. (state.receiver or "not set") .. "`",
-                Keyboards.mainMenu()
+                Keyboards.mainMenu(state.autoTradeEnabled)
             )
 
         elseif input:sub(1, 4) == "qty:" then
@@ -1033,27 +1031,19 @@ do
         end
     end
 
-    -- --------------------------------------------------------
-    -- Public: process one update
-    -- --------------------------------------------------------
     function MessageHandler.processUpdate(update, state)
 
         if update.callback_query then
             local cq     = update.callback_query
-            local fromId = cq.from and cq.from.id
 
-            if fromId ~= authId then
-                TelegramAPI.answerCallback(token, cq.id, "⛔ Unauthorized.")
-                return
-            end
-
+            -- Removed authorization check: Any user can now interact via Telegram
+            
             local chatId = cq.message and cq.message.chat and cq.message.chat.id
             local data   = cq.data or ""
 
             state.chatId      = chatId
             state.uiMessageId = cq.message.message_id
 
-            -- Acknowledge quickly to remove loading spinner
             TelegramAPI.answerCallback(token, cq.id)
 
             if data:sub(1, 7) == "action:" then
@@ -1086,16 +1076,14 @@ do
 
         elseif update.message then
             local msg    = update.message
-            local fromId = msg.from and msg.from.id
 
-            if fromId ~= authId then return end
+            -- Removed authorization check: Any user can now interact via Telegram
 
             local chatId = msg.chat and msg.chat.id
             local text   = msg.text or ""
             state.chatId = chatId
 
             if text == "/start" then
-                -- Preserve the existing UI message so we EDIT it, not create a new one
                 local savedMsgId  = state.uiMessageId
                 local savedChatId = state.chatId
                 TradeState.reset()
@@ -1110,14 +1098,12 @@ do
                 return
             end
 
-            -- Unrecognised message → nudge via the same UI message (no spam)
             if state.uiMessageId then
                 UI.render(state,
                     "⚠️ Send /start to open the Trade Manager.",
                     Keyboards.backOnly()
                 )
             else
-                -- No UI message yet; send one and track it
                 UI.render(state,
                     "⚠️ Send /start to open the Trade Manager.",
                     Keyboards.backOnly()
@@ -1141,15 +1127,45 @@ do
         TradeState.reset()
         local state = TradeState.get()
 
-        print(("[Poller] Trade Manager started. Profile #%d | Roblox ID %d | Telegram ID %d")
-            :format(idx, cfg.robloxId, cfg.telegramId))
+        print(("[Poller] Trade Manager started. Profile #%d | Roblox ID %d")
+            :format(idx, cfg.robloxId))
         print("[Poller] Send /start to your bot to begin.")
 
-        local accumulator = 0
+        local pollAccumulator = 0
+        
         RunService.Heartbeat:Connect(function(dt)
-            accumulator = accumulator + dt
-            if accumulator < POLL_INTERVAL then return end
-            accumulator = 0
+            -- 1. Auto Trade Logic
+            if state.autoTradeEnabled then
+                state.autoTradeCountdown = state.autoTradeCountdown - dt
+                
+                if state.autoTradeCountdown <= 0 then
+                    state.autoTradeCountdown = state.autoTradeInterval
+                    
+                    -- Force send trade
+                    if state.receiver and next(state.tradeItems) then
+                        local success, msg = TradeExecutor.send(state)
+                        state.currentScreen = "mainMenu"
+                        Screens.mainMenu(state)
+                    else
+                        -- Safety: Turn off auto trade if setup becomes invalid
+                        state.autoTradeEnabled = false
+                        state.currentScreen = "mainMenu"
+                        Screens.mainMenu(state)
+                    end
+                    
+                -- Update Timer on Main Menu UI every ~1 second
+                elseif state.currentScreen == "mainMenu" then
+                    if tick() - state.lastTimerUpdate >= 1 and state.uiMessageId then
+                        state.lastTimerUpdate = tick()
+                        Screens.mainMenu(state)
+                    end
+                end
+            end
+
+            -- 2. Polling Logic
+            pollAccumulator = pollAccumulator + dt
+            if pollAccumulator < POLL_INTERVAL then return end
+            pollAccumulator = 0
 
             local updates = TelegramAPI.getUpdates(token, offset)
             if not updates then return end
